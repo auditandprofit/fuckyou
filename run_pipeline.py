@@ -86,16 +86,23 @@ def main() -> None:
 
     orch = Orchestrator(run_agent)
 
-    for rel_path in manifest_files:
+    try:
+        initial = orch.gather_initial_findings(manifest_path, PROMPT_PREFIX)
+    except Exception as exc:  # pragma: no cover - unexpected
+        logger.error("initial gathering failed: %s", exc)
+        initial = []
+
+    for f in initial:
         try:
+            rel_path = Path(f["files"][0])
             abs_path = REPO_ROOT / rel_path
             file_bytes = abs_path.read_bytes()
             finding_id = hashlib.sha1(rel_path.as_posix().encode()).hexdigest()[:12]
             finding = {
                 "finding_id": finding_id,
-                "claim": "",
-                "files": [rel_path.as_posix()],
-                "evidence": {},
+                "claim": f["claim"],
+                "files": f["files"],
+                "evidence": {"seed": f["evidence"]},
                 "provenance": {
                     "run_id": run_id,
                     "created_at": utc_now_iso(),
@@ -105,6 +112,7 @@ def main() -> None:
                 },
                 "status": "seeded",
                 "conditions": [],
+                "tasks_log": [],
             }
             atomic_write(
                 run_path / f"finding_{finding_id}.json",
@@ -113,7 +121,7 @@ def main() -> None:
             counts["findings_written"] += 1
             logger.info("Seeded finding %s", finding_id)
         except Exception as exc:  # per-file errors
-            logger.error("Error processing %s: %s", rel_path, exc)
+            logger.error("Error processing %s: %s", f, exc)
             counts["errors"] += 1
 
     orch.process_findings(run_path)
