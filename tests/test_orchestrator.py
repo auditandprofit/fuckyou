@@ -97,7 +97,9 @@ def test_execute_tasks_atomic_write_no_partial_on_error(tmp_path, monkeypatch):
     orch = Orchestrator(lambda x: "out")
     cond = Condition(description="c")
     finding = tmp_path / "f.json"
-    finding.write_text(json.dumps({"tasks_log": []}))
+    finding.write_text(
+        json.dumps({"tasks_log": [], "provenance": {"path": "examples/example1.py"}})
+    )
 
     from util import io as uio
 
@@ -110,7 +112,10 @@ def test_execute_tasks_atomic_write_no_partial_on_error(tmp_path, monkeypatch):
         orch._execute_tasks(finding, cond, [{"task": "t", "original": "t"}])
 
     # Original file untouched and valid JSON
-    assert json.loads(finding.read_text()) == {"tasks_log": []}
+    assert json.loads(finding.read_text()) == {
+        "tasks_log": [],
+        "provenance": {"path": "examples/example1.py"},
+    }
     assert list(tmp_path.iterdir()) == [finding]
 
 

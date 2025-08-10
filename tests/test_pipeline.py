@@ -4,6 +4,7 @@ import sys
 import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -15,13 +16,36 @@ from util.io import atomic_write
 
 
 @pytest.fixture(autouse=True)
-def clean_env():
+def clean_env(tmp_path, monkeypatch):
     findings = Path("findings")
     if findings.exists():
         shutil.rmtree(findings)
     findings.mkdir()
     manifest = Path("manifest.txt")
     original = manifest.read_text()
+
+    codex_dir = Path(tempfile.mkdtemp())
+    codex = codex_dir / "codex"
+    codex.write_text(
+        "#! /usr/bin/env python3\n"
+        "import sys, json, re, os\n"
+        "sys.path.insert(0, os.getcwd())\n"
+        "prompt = sys.stdin.read()\n"
+        "m = re.search(r'Path: (.*)', prompt)\n"
+        "path = m.group(1).strip() if m else ''\n"
+        "if 'Action: DISCOVER' in prompt:\n"
+        "    out = {\"type\":\"discover\",\"claim\":f'Review {path}',\"files\":[path],\"evidence\":{}}\n"
+        "elif 'Action: EXEC' in prompt:\n"
+        "    tm = re.search(r'Task: (.*)', prompt)\n"
+        "    payload = tm.group(1).strip() if tm else ''\n"
+        "    from agent import run_agent\n"
+        "    out = {\"type\":\"exec\",\"task\":payload,\"result\":run_agent(payload)}\n"
+        "else:\n"
+        "    out = {\"error\":\"unknown\"}\n"
+        "sys.stdout.write(json.dumps(out))\n"
+    )
+    codex.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{codex_dir}:{os.environ['PATH']}")
     yield
     manifest.write_text(original)
     if findings.exists():

@@ -57,18 +57,18 @@ class Orchestrator:
 
     # -- Seed input -----------------------------------------------------------
     def gather_initial_findings(
-        self, manifest_files: List[Path], prompt_prefix: str
+        self, manifest_files: List[Path], _prompt_prefix: str
     ) -> List[Dict]:
         findings: List[Dict] = []
         for code_path in manifest_files:
-            prompt = f"{prompt_prefix}{code_path.as_posix()}"
-            agent_response = self.agent(prompt)
-            finding = {
-                "claim": f"Review {code_path.as_posix()}",
-                "files": [code_path.as_posix()],
-                "evidence": agent_response,
-            }
-            findings.append(finding)
+            data = self.agent(f"codex:discover:{code_path.as_posix()}")
+            findings.append(
+                {
+                    "claim": data.get("claim", f"Review {code_path.as_posix()}"),
+                    "files": data.get("files", [code_path.as_posix()]),
+                    "evidence": data.get("evidence", {}),
+                }
+            )
         return findings
 
     # -- Orchestration per finding -------------------------------------------
@@ -153,10 +153,7 @@ class Orchestrator:
         """Generate tasks to gather evidence for ``condition``."""
         messages = [
             {"role": "system", "content": "You generate step-by-step tasks."},
-            {
-                "role": "user",
-                "content": f"Condition: {condition.description}",
-            },
+            {"role": "user", "content": f"Condition: {condition.description}"},
         ]
         functions = [
             {
@@ -183,10 +180,7 @@ class Orchestrator:
                 temperature=0,
             )
             _, data = openai_parse_function_call(response)
-            for t in data.get("tasks", []) or []:
-                norm = self._normalize_task(t, code_path)
-                if norm:
-                    tasks.append({"task": norm, "original": t})
+            tasks = [{"task": t, "original": t} for t in data.get("tasks", []) or []]
         except Exception as exc:  # pragma: no cover
             self.logger.warning("task generation failed: %s", exc)
         if not tasks:
@@ -303,6 +297,9 @@ class Orchestrator:
 
     def _execute_tasks(self, finding_file: Path, condition: Condition, tasks: List[dict]) -> List[dict]:
         """Execute tasks via agent and persist a task log blob."""
+        with open(finding_file) as fh:
+            finding = json.load(fh)
+        code_path = finding.get("provenance", {}).get("path", "")
         task_results: List[dict] = []
         for t in tasks:
             goal = t["task"]
@@ -310,7 +307,7 @@ class Orchestrator:
             stamp = utc_now_iso()
             goal_hash = hashlib.sha1(goal.encode()).hexdigest()
             try:
-                out = self.agent(goal)
+                out = self.agent(f"codex:exec:{code_path}::{goal}")
                 task_results.append(
                     {
                         "task": goal,
@@ -331,12 +328,10 @@ class Orchestrator:
                         "input_sha1": goal_hash,
                     }
                 )
-        with open(finding_file) as fh:
-            data = json.load(fh)
-        data.setdefault("tasks_log", []).append(
+        finding.setdefault("tasks_log", []).append(
             {"condition": condition.description, "executed": task_results}
         )
-        atomic_write(finding_file, json.dumps(data, indent=2).encode())
+        atomic_write(finding_file, json.dumps(finding, indent=2).encode())
         return task_results
 
     def resolve_condition(

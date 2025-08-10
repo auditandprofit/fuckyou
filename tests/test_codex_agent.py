@@ -60,6 +60,24 @@ def test_py_classes():
     assert res == data
 
 
+def test_discover():
+    data = {"type": "discover", "claim": "c", "files": ["p"], "evidence": {}}
+    agent = _agent_with_result(data)
+    res = agent.run("codex:discover:p")
+    assert res == data
+
+
+def test_exec():
+    data = {
+        "type": "exec",
+        "task": "stat:p",
+        "result": {"type": "stat", "path": "p", "size": 1, "sha1": "aa"},
+    }
+    agent = _agent_with_result(data)
+    res = agent.run("codex:exec:p::stat:p")
+    assert res == data
+
+
 def test_timeout():
     client = DummyCodexClient(error=CodexTimeout("boom"))
     workdir = str(Path(__file__).resolve().parents[1])

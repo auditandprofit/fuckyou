@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Tuple
 
 from codex_dispatch import CodexClient, CodexError, CodexTimeout
 
@@ -17,7 +16,15 @@ class CodexAgent:
         self.timeout = timeout
 
     # ---------------- Parsing & Validation -----------------
-    def _parse_task(self, task: str) -> Tuple[str, str]:
+    def _parse_task(self, task: str):
+        if task.startswith("codex:discover:"):
+            return ("discover", task.split("codex:discover:", 1)[1].strip())
+        if task.startswith("codex:exec:"):
+            rest = task.split("codex:exec:", 1)[1]
+            if "::" not in rest:
+                raise ValueError("unsupported task")
+            path, payload = rest.split("::", 1)
+            return ("exec", path.strip(), payload.strip())
         if ":" not in task:
             raise ValueError("unsupported task")
         verb, rest = task.split(":", 1)
@@ -34,7 +41,7 @@ class CodexAgent:
         if verb not in {"read", "stat", "py:functions", "py:classes"}:
             raise ValueError("unsupported task")
         path = self._repo_rel(path)
-        return verb, path
+        return (verb, path)
 
     def _repo_rel(self, p: str) -> str:
         root = Path(self.workdir).resolve()
@@ -44,7 +51,19 @@ class CodexAgent:
         return str(abspath.relative_to(root))
 
     # ---------------- Prompt -----------------
-    def _build_prompt(self, kind: str, path: str) -> str:
+    def _build_prompt(self, kind: str, path: str, payload: str | None = None) -> str:
+        if kind == "discover":
+            return (
+                "SYSTEM:\nStrict JSON only.\n\nUSER:\n"
+                f"Action: DISCOVER\nPath: {path}\n"
+                'Return: {"type":"discover","claim":"...","files":["..."],"evidence":{...}}\n'
+            )
+        if kind == "exec":
+            return (
+                "SYSTEM:\nStrict JSON only.\n\nUSER:\n"
+                f"Action: EXEC\nPath: {path}\nTask: {payload}\n"
+                'Return: {"type":"exec","task":"...","result":{...}}\n'
+            )
         action = {
             "read": "READ",
             "stat": "STAT",
@@ -85,12 +104,27 @@ class CodexAgent:
             b = data["bytes"]
             if len(b) > MAX_BYTES:
                 data["bytes"] = b[:MAX_BYTES]
+        if data.get("type") == "exec":
+            inner = data.get("result", {})
+            if isinstance(inner, dict) and inner.get("type") == "read" and isinstance(inner.get("bytes"), str):
+                b = inner["bytes"]
+                if len(b) > MAX_BYTES:
+                    inner["bytes"] = b[:MAX_BYTES]
         return data
 
     # ---------------- Public API -----------------
     def run(self, task: str) -> dict:
-        kind, path = self._parse_task(task)
-        prompt = self._build_prompt(kind, path)
+        parsed = self._parse_task(task)
+        kind = parsed[0]
+        if kind == "discover":
+            path = parsed[1]
+            prompt = self._build_prompt("discover", path)
+        elif kind == "exec":
+            _, path, payload = parsed
+            prompt = self._build_prompt("exec", path, payload)
+        else:
+            path = parsed[1]
+            prompt = self._build_prompt(kind, path)
         try:
             res = self.codex.exec(
                 prompt=prompt,
@@ -108,3 +142,4 @@ class CodexAgent:
                 "stderr_head": exc.result.stderr[:512],
             }
         return self._postprocess(kind, path, res)
+
