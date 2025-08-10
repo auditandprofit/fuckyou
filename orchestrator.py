@@ -14,6 +14,7 @@ from typing import Callable, Dict, List
 import json
 import logging
 
+from util.io import atomic_write
 from util.openai import (
     openai_generate_response,
     openai_parse_function_call,
@@ -203,6 +204,55 @@ class Orchestrator:
             self.logger.warning("judgement failed: %s", exc)
             return "unknown"
 
+    # -- Sub-condition narrowing -------------------------------------------
+    def _narrow_subconditions(self, condition: Condition) -> List[Condition]:
+        """Deterministically derive sub-conditions for an uncertain condition."""
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "Propose minimal, checkable sub-conditions that would "
+                    "resolve uncertainty."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Parent condition: {condition.description}\n"
+                    f"Current evidence: {condition.evidence[-1:]}"
+                ),
+            },
+        ]
+        functions = [
+            {
+                "name": "emit_conditions",
+                "description": "Return a list of subcondition descriptions.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "conditions": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        }
+                    },
+                    "required": ["conditions"],
+                },
+            }
+        ]
+        try:
+            response = openai_generate_response(
+                messages=messages,
+                functions=functions,
+                function_call={"name": "emit_conditions"},
+                temperature=0,
+            )
+            _, data = openai_parse_function_call(response)
+            subs = [Condition(description=d) for d in data.get("conditions", [])]
+            condition.subconditions.extend(subs)
+            return subs
+        except Exception:  # pragma: no cover - openai failure
+            return []
+
     def _execute_tasks(self, finding_file: Path, condition: Condition, tasks: list[str]) -> list[dict]:
         """Execute tasks via agent and persist a task log blob."""
         task_results = []
@@ -215,35 +265,54 @@ class Orchestrator:
                 task_results.append({"task": t, "error": str(exc)})
         with open(finding_file) as fh:
             data = json.load(fh)
-        data.setdefault("tasks_log", []).append({
-            "condition": condition.description,
-            "executed": task_results,
-        })
-        with open(finding_file, "w") as fh:
-            json.dump(data, fh, indent=2)
+        data.setdefault("tasks_log", []).append(
+            {"condition": condition.description, "executed": task_results}
+        )
+        atomic_write(finding_file, json.dumps(data, indent=2).encode())
         return task_results
 
-    def resolve_condition(self, condition: Condition, finding_path: Path) -> None:
-        """Resolve a condition by generating tasks and judging the result."""
-        tasks = self.generate_tasks(condition)
-        if not tasks:
-            return
-        self.logger.info("Tasks for condition '%s': %s", condition.description, tasks)
-        self._execute_tasks(finding_path, condition, tasks)
-        condition.state = self.judge_condition(condition)
+    def resolve_condition(
+        self, condition: Condition, finding_path: Path, *, max_steps: int = 3
+    ) -> None:
+        """Resolve a condition by iterating generate→execute→judge cycles."""
+        for step in range(max_steps):
+            tasks = self.generate_tasks(condition)
+            if not tasks:
+                break
+            self.logger.info(
+                "Tasks for condition '%s' [step %d]: %s",
+                condition.description,
+                step + 1,
+                tasks,
+            )
+            self._execute_tasks(finding_path, condition, tasks)
+            state = self.judge_condition(condition)
+            condition.state = state
+            if state != "unknown":
+                return
+            subs = self._narrow_subconditions(condition)
+            if subs:
+                for sub in subs:
+                    self.resolve_condition(sub, finding_path, max_steps=max_steps)
+                states = {c.state for c in subs}
+                if states == {"satisfied"}:
+                    condition.state = "satisfied"
+                    return
+                if "failed" in states and "satisfied" not in states:
+                    condition.state = "failed"
+                    return
 
-    def process_findings(self, findings_dir: Path) -> None:
+    def process_findings(self, findings_dir: Path, *, max_steps: int = 3) -> None:
         for finding_file in findings_dir.glob("finding_*.json"):
             self.logger.info("Processing %s", finding_file.name)
             with open(finding_file) as fh:
                 finding = json.load(fh)
             conditions = self.derive_conditions(finding)
             for condition in conditions:
-                self.resolve_condition(condition, finding_file)
+                self.resolve_condition(condition, finding_file, max_steps=max_steps)
             # reload tasks_log in case tasks were executed
             with open(finding_file) as fh:
                 updated = json.load(fh)
             finding["tasks_log"] = updated.get("tasks_log", [])
             finding["conditions"] = [c.to_dict() for c in conditions]
-            with open(finding_file, "w") as fh:
-                json.dump(finding, fh, indent=2)
+            atomic_write(finding_file, json.dumps(finding, indent=2).encode())
