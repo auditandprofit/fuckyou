@@ -7,7 +7,8 @@ import json
 import logging
 import time
 
-from agent import run_agent
+from codex_dispatch import CodexClient
+from codex_agent import CodexAgent
 from orchestrator import Orchestrator
 from util.git import get_git_short, is_dirty
 from util.time import utc_now_iso, utc_timestamp
@@ -76,7 +77,9 @@ def main() -> None:
     counts = run_data["counts"]
     counts["manifest_files"] = len(manifest_files)
 
-    orch = Orchestrator(run_agent)
+    codex = CodexClient()
+    codex_agent = CodexAgent(codex, workdir=str(REPO_ROOT))
+    orch = Orchestrator(codex_agent.run)
 
     try:
         initial = orch.gather_initial_findings(manifest_files, PROMPT_PREFIX)
