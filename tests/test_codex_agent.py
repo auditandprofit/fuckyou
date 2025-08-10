@@ -121,6 +121,24 @@ def test_path_escape():
         assert False
 
 
+def test_path_escape_custom_verbs():
+    client = DummyCodexClient()
+    workdir = str(Path(__file__).resolve().parents[1])
+    agent = CodexAgent(client, workdir=workdir)
+    try:
+        agent.run("codex:discover:../secret")
+    except ValueError as e:
+        assert "outside" in str(e)
+    else:  # pragma: no cover
+        assert False
+    try:
+        agent.run("codex:exec:../secret::stat:foo")
+    except ValueError as e:
+        assert "outside" in str(e)
+    else:  # pragma: no cover
+        assert False
+
+
 def test_truncate_bytes():
     long_bytes = "x" * (MAX_BYTES + 10)
     data = {"type": "read", "path": "p", "bytes": long_bytes, "sha1": "aa"}

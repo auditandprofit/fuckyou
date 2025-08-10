@@ -18,30 +18,42 @@ class CodexAgent:
     # ---------------- Parsing & Validation -----------------
     def _parse_task(self, task: str):
         if task.startswith("codex:discover:"):
-            return ("discover", task.split("codex:discover:", 1)[1].strip())
-        if task.startswith("codex:exec:"):
+            kind = "discover"
+            path = task.split("codex:discover:", 1)[1].strip()
+            payload = None
+        elif task.startswith("codex:exec:"):
             rest = task.split("codex:exec:", 1)[1]
             if "::" not in rest:
                 raise ValueError("unsupported task")
             path, payload = rest.split("::", 1)
-            return ("exec", path.strip(), payload.strip())
-        if ":" not in task:
-            raise ValueError("unsupported task")
-        verb, rest = task.split(":", 1)
-        verb = verb.lower()
-        if verb == "py":
-            if ":" not in rest:
-                raise ValueError("unsupported task")
-            subverb, path = rest.split(":", 1)
-            verb = f"py:{subverb.lower()}"
+            kind = "exec"
+            path = path.strip()
+            payload = payload.strip()
         else:
-            path = rest
-        verb = verb.strip()
-        path = path.strip()
-        if verb not in {"read", "stat", "py:functions", "py:classes"}:
-            raise ValueError("unsupported task")
-        path = self._repo_rel(path)
-        return (verb, path)
+            if ":" not in task:
+                raise ValueError("unsupported task")
+            verb, rest = task.split(":", 1)
+            verb = verb.lower()
+            if verb == "py":
+                if ":" not in rest:
+                    raise ValueError("unsupported task")
+                subverb, path = rest.split(":", 1)
+                kind = f"py:{subverb.lower()}"
+            else:
+                path = rest
+                kind = verb
+            kind = kind.strip()
+            path = path.strip()
+            if kind not in {"read", "stat", "py:functions", "py:classes"}:
+                raise ValueError("unsupported task")
+            payload = None
+
+        if kind in {"discover", "exec", "read", "stat", "py:functions", "py:classes"}:
+            path = self._repo_rel(path)
+
+        if kind == "exec":
+            return (kind, path, payload)
+        return (kind, path)
 
     def _repo_rel(self, p: str) -> str:
         root = Path(self.workdir).resolve()

@@ -201,6 +201,8 @@ class Orchestrator:
             if "exists" in condition.description.lower() or "parses" in condition.description.lower():
                 return "failed"
         typ = data.get("type")
+        if typ == "exec":
+            typ = data.get("result", {}).get("type")
         if typ == "stat":
             return "satisfied"
         if typ == "py:functions":
