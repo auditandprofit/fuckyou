@@ -159,3 +159,8 @@ def test_judgement_shortcuts(monkeypatch):
         description="Target file parses as Python", evidence=[json.dumps({"type": "py:functions"})]
     )
     assert orch.judge_condition(cond3) == "satisfied"
+    cond4 = Condition(
+        description="Target file exists",
+        evidence=[json.dumps({"type": "exec", "result": {"type": "stat"}})],
+    )
+    assert orch.judge_condition(cond4) == "satisfied"
