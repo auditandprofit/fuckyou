@@ -35,6 +35,7 @@ def openai_generate_response(
     model: str = "o3",
     reasoning_effort: str = "high",
     service_tier: str = "flex",
+    temperature: float = 0,
     **extra: Any,
 ):
     """Wrapper around ``client.responses.create`` with defaults."""
@@ -42,7 +43,7 @@ def openai_generate_response(
     if client is None:
         raise RuntimeError("OpenAI client is not configured")
 
-    tools: List[Dict[str, Any]] = [{"type": "web_search"}]
+    tools: List[Dict[str, Any]] = []
     if functions:
         tools.extend({"type": "function", **f} for f in functions)
 
@@ -52,6 +53,7 @@ def openai_generate_response(
         "tools": tools,
         "reasoning": {"effort": reasoning_effort},
         "service_tier": service_tier,
+        "temperature": temperature,
         **extra,
     }
 

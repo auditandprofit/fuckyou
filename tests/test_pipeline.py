@@ -1,4 +1,5 @@
 import json
+import json
 import sys
 import os
 import shutil
@@ -107,6 +108,22 @@ def test_run_json_timestamps_counts():
     assert run_data["counts"]["manifest_files"] == 2
     assert run_data["counts"]["findings_written"] == 2
     assert run_data["counts"]["errors"] == 0
+
+
+def test_seeded_findings_have_claim_and_evidence():
+    manifest = Path("manifest.txt")
+    manifest.write_text("examples/example1.py")
+    res = run_pipeline()
+    assert res.returncode == 0
+    run_dir = get_run_dirs()[0]
+    finding_files = list(run_dir.glob("finding_*.json"))
+    assert finding_files
+    for fp in finding_files:
+        data = json.loads(fp.read_text())
+        assert data["claim"]
+        assert data["evidence"].get("seed") is not None
+        assert "tasks_log" in data
+        assert "conditions" in data
 
 
 def test_atomic_write_no_partial_on_error(tmp_path, monkeypatch):

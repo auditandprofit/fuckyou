@@ -61,8 +61,9 @@ class Orchestrator:
         for code_path in self.load_manifest(manifest_path):
             prompt = f"{prompt_prefix}{code_path}"
             agent_response = self.agent(prompt)
+            claim = str(agent_response).strip() or f"Review {code_path}"
             finding = {
-                "claim": agent_response,
+                "claim": claim,
                 "files": [str(code_path)],
                 "evidence": agent_response,
             }
@@ -149,6 +150,7 @@ class Orchestrator:
                 messages=messages,
                 functions=functions,
                 function_call={"name": "emit_tasks"},
+                temperature=0,
             )
             _, data = openai_parse_function_call(response)
             return data.get("tasks", [])
@@ -158,6 +160,8 @@ class Orchestrator:
 
     def judge_condition(self, condition: Condition) -> str:
         """Use the LLM to judge whether ``condition`` is satisfied."""
+        if not condition.evidence:
+            return "unknown"
         messages = [
             {
                 "role": "system",
@@ -191,6 +195,7 @@ class Orchestrator:
                 messages=messages,
                 functions=functions,
                 function_call={"name": "judge_condition"},
+                temperature=0,
             )
             _, data = openai_parse_function_call(response)
             return data.get("state", "unknown")
@@ -198,13 +203,33 @@ class Orchestrator:
             self.logger.warning("judgement failed: %s", exc)
             return "unknown"
 
-    def resolve_condition(self, condition: Condition) -> None:
+    def _execute_tasks(self, finding_file: Path, condition: Condition, tasks: list[str]) -> list[dict]:
+        """Execute tasks via agent and persist a task log blob."""
+        task_results = []
+        for t in tasks:
+            try:
+                out = self.agent(t)
+                task_results.append({"task": t, "output": out})
+                condition.evidence.append(str(out)[:10000])
+            except Exception as exc:
+                task_results.append({"task": t, "error": str(exc)})
+        with open(finding_file) as fh:
+            data = json.load(fh)
+        data.setdefault("tasks_log", []).append({
+            "condition": condition.description,
+            "executed": task_results,
+        })
+        with open(finding_file, "w") as fh:
+            json.dump(data, fh, indent=2)
+        return task_results
+
+    def resolve_condition(self, condition: Condition, finding_path: Path) -> None:
         """Resolve a condition by generating tasks and judging the result."""
         tasks = self.generate_tasks(condition)
         if not tasks:
             return
-        # Agent execution is not implemented; log tasks for now.
         self.logger.info("Tasks for condition '%s': %s", condition.description, tasks)
+        self._execute_tasks(finding_path, condition, tasks)
         condition.state = self.judge_condition(condition)
 
     def process_findings(self, findings_dir: Path) -> None:
@@ -214,7 +239,11 @@ class Orchestrator:
                 finding = json.load(fh)
             conditions = self.derive_conditions(finding)
             for condition in conditions:
-                self.resolve_condition(condition)
+                self.resolve_condition(condition, finding_file)
+            # reload tasks_log in case tasks were executed
+            with open(finding_file) as fh:
+                updated = json.load(fh)
+            finding["tasks_log"] = updated.get("tasks_log", [])
             finding["conditions"] = [c.to_dict() for c in conditions]
             with open(finding_file, "w") as fh:
                 json.dump(finding, fh, indent=2)
