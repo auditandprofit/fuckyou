@@ -1,5 +1,7 @@
 """Thin wrapper around the OpenAI client used by phase mode."""
 
+from __future__ import annotations
+
 import json
 import logging
 import os
