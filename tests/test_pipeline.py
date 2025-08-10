@@ -1,11 +1,10 @@
 import json
-import json
 import sys
 import os
 import shutil
-import subprocess
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -52,11 +51,26 @@ def clean_env(tmp_path, monkeypatch):
         shutil.rmtree(findings)
 
 
-def run_pipeline() -> subprocess.CompletedProcess:
-    return subprocess.run([
-        "python",
-        "run_pipeline.py",
-    ], capture_output=True, text=True)
+def run_pipeline(monkeypatch, llm_stub=None) -> SimpleNamespace:
+    import run_pipeline as rp
+
+    if llm_stub is None:
+        llm_stub = lambda *a, **k: {
+            "output": [
+                {
+                    "type": "tool_call",
+                    "name": "emit_conditions",
+                    "arguments": "{\"conditions\": []}",
+                }
+            ]
+        }
+
+    monkeypatch.setattr("orchestrator.openai_generate_response", llm_stub)
+    try:
+        rp.main()
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+    except SystemExit as exc:
+        return SimpleNamespace(returncode=exc.code, stdout="", stderr="")
 
 
 def get_run_dirs():
@@ -67,13 +81,13 @@ def read_run_json(run_dir: Path) -> dict:
     return json.loads((run_dir / "run.json").read_text())
 
 
-def test_stable_ids_and_run_separation():
+def test_stable_ids_and_run_separation(monkeypatch):
     manifest = Path("manifest.txt")
     manifest.write_text("\n".join([
         "examples/example1.py",
         "examples/example2.py",
     ]))
-    res1 = run_pipeline()
+    res1 = run_pipeline(monkeypatch)
     assert res1.returncode == 0
     dirs_after_first = get_run_dirs()
     assert len(dirs_after_first) == 1
@@ -84,7 +98,7 @@ def test_stable_ids_and_run_separation():
         "examples/example2.py",
         "examples/example1.py",
     ]))
-    res2 = run_pipeline()
+    res2 = run_pipeline(monkeypatch)
     assert res2.returncode == 0
     dirs_after_second = get_run_dirs()
     assert len(dirs_after_second) == 2
@@ -94,37 +108,37 @@ def test_stable_ids_and_run_separation():
     assert files_first == files_second
 
 
-def test_invalid_manifest_errors():
+def test_invalid_manifest_errors(monkeypatch):
     manifest = Path("manifest.txt")
     # duplicate and missing
     manifest.write_text("\n".join([
         "examples/example1.py",
         "examples/example1.py",
     ]))
-    res = run_pipeline()
+    res = run_pipeline(monkeypatch)
     assert res.returncode != 0
     assert get_run_dirs() == []
 
     # out-of-repo
     manifest.write_text("../examples/example1.py")
-    res = run_pipeline()
+    res = run_pipeline(monkeypatch)
     assert res.returncode != 0
     assert get_run_dirs() == []
 
     # missing file
     manifest.write_text("examples/missing.py")
-    res = run_pipeline()
+    res = run_pipeline(monkeypatch)
     assert res.returncode != 0
     assert get_run_dirs() == []
 
 
-def test_run_json_timestamps_counts():
+def test_run_json_timestamps_counts(monkeypatch):
     manifest = Path("manifest.txt")
     manifest.write_text("\n".join([
         "examples/example1.py",
         "examples/example2.py",
     ]))
-    res = run_pipeline()
+    res = run_pipeline(monkeypatch)
     assert res.returncode == 0
     run_dir = get_run_dirs()[0]
     run_data = read_run_json(run_dir)
@@ -134,10 +148,10 @@ def test_run_json_timestamps_counts():
     assert run_data["counts"]["errors"] == 0
 
 
-def test_seeded_findings_have_claim_and_evidence():
+def test_seeded_findings_have_claim_and_evidence(monkeypatch):
     manifest = Path("manifest.txt")
     manifest.write_text("examples/example1.py")
-    res = run_pipeline()
+    res = run_pipeline(monkeypatch)
     assert res.returncode == 0
     run_dir = get_run_dirs()[0]
     finding_files = list(run_dir.glob("finding_*.json"))
@@ -168,9 +182,42 @@ def test_manifest_is_single_source(monkeypatch):
     monkeypatch.setattr(rp, "validate_manifest", fake_validate)
     monkeypatch.setattr("orchestrator.Orchestrator.gather_initial_findings", fake_gather)
 
+    monkeypatch.setattr(
+        "orchestrator.openai_generate_response",
+        lambda *a, **k: {
+            "output": [
+                {
+                    "type": "tool_call",
+                    "name": "emit_conditions",
+                    "arguments": "{\"conditions\": []}",
+                }
+            ]
+        },
+    )
     rp.main()
     assert called.get("validate") is True
     assert called.get("gather") == [Path("examples/example1.py")]
+
+
+def test_pipeline_aborts_on_llm_failure(monkeypatch):
+    manifest = Path("manifest.txt")
+    manifest.write_text("examples/example1.py")
+
+    def boom(*a, **k):
+        raise RuntimeError("no llm")
+
+    res = run_pipeline(monkeypatch, llm_stub=boom)
+    assert res.returncode != 0
+
+    run_dir = get_run_dirs()[0]
+    log = (run_dir / "orchestrator.log").read_text()
+    assert "Aborting run" in log
+    finding_file = next(run_dir.glob("finding_*.json"))
+    data = json.loads(finding_file.read_text())
+    assert data["conditions"] == []
+    assert data["tasks_log"] == []
+    run_data = read_run_json(run_dir)
+    assert run_data["counts"]["errors"] == 1
 
 
 def test_atomic_write_no_partial_on_error(tmp_path, monkeypatch):

@@ -2,9 +2,8 @@
 
 This module coordinates between a manifest, an agent, and stored findings.
 LLM calls are routed through :mod:`util.openai` so that judgment, condition
-generation, and task generation can be powered by the OpenAI API when
-available.  In environments without an API key the orchestrator gracefully
-falls back to stub behaviour.
+generation, and task generation are powered by the OpenAI API.  All such calls
+must succeed; if the API is unavailable the run aborts.
 """
 from __future__ import annotations
 
@@ -14,7 +13,9 @@ from typing import Callable, Dict, List
 import hashlib
 import json
 import logging
+import os
 import re
+import time
 
 from util.io import atomic_write
 from util.openai import (
@@ -49,11 +50,29 @@ class Condition:
 class Orchestrator:
     """Coordinate finding generation and condition evaluation."""
 
-    VERSION = "0.1"
+    VERSION = "0.2"
 
     def __init__(self, agent: Callable[[str], str]):
         self.agent = agent
         self.logger = logging.getLogger(__name__)
+        self.max_retries = int(os.getenv("ANCHOR_OPENAI_RETRIES", "3"))
+
+    def _with_retries(self, func: Callable, *args, **kwargs):
+        last_exc = None
+        for attempt in range(self.max_retries):
+            try:
+                return func(*args, **kwargs)
+            except Exception as exc:  # pragma: no cover - network issues
+                last_exc = exc
+                self.logger.warning(
+                    "OpenAI call failed (attempt %d/%d): %s",
+                    attempt + 1,
+                    self.max_retries,
+                    exc,
+                )
+                if attempt < self.max_retries - 1:
+                    time.sleep(0.5 * (2**attempt))
+        raise last_exc
 
     # -- Seed input -----------------------------------------------------------
     def gather_initial_findings(
@@ -76,8 +95,7 @@ class Orchestrator:
         """Use the LLM to deterministically derive conditions.
 
         The model is expected to call the ``emit_conditions`` function with a
-        JSON payload of ``{"conditions": ["..."]}``.  If the OpenAI client is
-        unavailable or the call fails, an empty list is returned.
+        JSON payload of ``{"conditions": ["..."]}``.
         """
         messages = [
             {
@@ -108,32 +126,15 @@ class Orchestrator:
                 },
             }
         ]
-        try:
-            response = openai_generate_response(
-                messages=messages,
-                functions=functions,
-                function_call={"name": "emit_conditions"},
-            )
-            _, data = openai_parse_function_call(response)
-            conds = [Condition(description=d) for d in data.get("conditions", [])]
-            return conds
-        except Exception as exc:  # pragma: no cover - network/credential issues
-            self.logger.warning("condition generation failed: %s", exc)
-            code_path = Path(finding["files"][0]) if finding.get("files") else Path("?")
-            conds = [Condition(description="Target file exists")]
-            if code_path.suffix == ".py":
-                conds.append(Condition(description="Target file parses as Python"))
-            return conds
-
-    def _plan_tasks(self, condition: Condition, code_path: Path) -> List[str]:
-        desc = condition.description.lower()
-        tasks: List[str] = []
-        path = code_path.as_posix()
-        if "exists" in desc:
-            tasks.append(f"stat:{path}")
-        if "parses" in desc and code_path.suffix == ".py":
-            tasks.append(f"py:functions:{path}")
-        return tasks
+        response = self._with_retries(
+            openai_generate_response,
+            messages=messages,
+            functions=functions,
+            function_call={"name": "emit_conditions"},
+        )
+        _, data = openai_parse_function_call(response)
+        conds = [Condition(description=d) for d in data.get("conditions", [])]
+        return conds
 
     def _normalize_task(self, text: str, code_path: Path) -> str | None:
         t = text.lower()
@@ -171,21 +172,15 @@ class Orchestrator:
                 },
             }
         ]
-        tasks: List[dict] = []
-        try:
-            response = openai_generate_response(
-                messages=messages,
-                functions=functions,
-                function_call={"name": "emit_tasks"},
-                temperature=0,
-            )
-            _, data = openai_parse_function_call(response)
-            tasks = [{"task": t, "original": t} for t in data.get("tasks", []) or []]
-        except Exception as exc:  # pragma: no cover
-            self.logger.warning("task generation failed: %s", exc)
-        if not tasks:
-            for t in self._plan_tasks(condition, code_path):
-                tasks.append({"task": t, "original": t})
+        response = self._with_retries(
+            openai_generate_response,
+            messages=messages,
+            functions=functions,
+            function_call={"name": "emit_tasks"},
+            temperature=0,
+        )
+        _, data = openai_parse_function_call(response)
+        tasks = [{"task": t, "original": t} for t in data.get("tasks", []) or []]
         return tasks
 
     def judge_condition(self, condition: Condition) -> str:
@@ -197,9 +192,6 @@ class Orchestrator:
             data = json.loads(latest)
         except Exception:
             data = {}
-        if data.get("error"):
-            if "exists" in condition.description.lower() or "parses" in condition.description.lower():
-                return "failed"
         typ = data.get("type")
         if typ == "exec":
             typ = data.get("result", {}).get("type")
@@ -235,18 +227,15 @@ class Orchestrator:
                 },
             }
         ]
-        try:
-            response = openai_generate_response(
-                messages=messages,
-                functions=functions,
-                function_call={"name": "judge_condition"},
-                temperature=0,
-            )
-            _, data = openai_parse_function_call(response)
-            return data.get("state", "unknown")
-        except Exception as exc:  # pragma: no cover
-            self.logger.warning("judgement failed: %s", exc)
-            return "unknown"
+        response = self._with_retries(
+            openai_generate_response,
+            messages=messages,
+            functions=functions,
+            function_call={"name": "judge_condition"},
+            temperature=0,
+        )
+        _, data = openai_parse_function_call(response)
+        return data.get("state", "unknown")
 
     # -- Sub-condition narrowing -------------------------------------------
     def _narrow_subconditions(self, condition: Condition) -> List[Condition]:
@@ -283,19 +272,17 @@ class Orchestrator:
                 },
             }
         ]
-        try:
-            response = openai_generate_response(
-                messages=messages,
-                functions=functions,
-                function_call={"name": "emit_conditions"},
-                temperature=0,
-            )
-            _, data = openai_parse_function_call(response)
-            subs = [Condition(description=d) for d in data.get("conditions", [])]
-            condition.subconditions.extend(subs)
-            return subs
-        except Exception:  # pragma: no cover - openai failure
-            return []
+        response = self._with_retries(
+            openai_generate_response,
+            messages=messages,
+            functions=functions,
+            function_call={"name": "emit_conditions"},
+            temperature=0,
+        )
+        _, data = openai_parse_function_call(response)
+        subs = [Condition(description=d) for d in data.get("conditions", [])]
+        condition.subconditions.extend(subs)
+        return subs
 
     def _execute_tasks(self, finding_file: Path, condition: Condition, tasks: List[dict]) -> List[dict]:
         """Execute tasks via agent and persist a task log blob."""

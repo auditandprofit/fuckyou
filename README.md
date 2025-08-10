@@ -2,6 +2,9 @@
 
 This repository demonstrates a deterministic, evidence-driven workflow for validating bug claims. The process is divided into the following stages:
 
+> **Note**: The pipeline requires a functioning OpenAI configuration. If any
+LLM call fails after internal retries, the run aborts and reports the error.
+
 1. **Seed Input**
    - Begin with a single manifest file that lists N code files.
    - For each file in the manifest, invoke an agent using a fixed, prefixed prompt template.

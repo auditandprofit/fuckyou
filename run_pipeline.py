@@ -121,7 +121,14 @@ def main() -> None:
             logger.error("Error processing %s: %s", f, exc)
             counts["errors"] += 1
 
-    orch.process_findings(run_path)
+    try:
+        orch.process_findings(run_path)
+    except Exception as exc:
+        logger.error("Aborting run due to LLM failure: %s", exc)
+        counts["errors"] += 1
+        run_data["finished_at"] = utc_now_iso()
+        write_run_json(run_path, run_data)
+        raise SystemExit(1)
 
     run_data["finished_at"] = utc_now_iso()
     write_run_json(run_path, run_data)

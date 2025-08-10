@@ -119,29 +119,6 @@ def test_execute_tasks_atomic_write_no_partial_on_error(tmp_path, monkeypatch):
     assert list(tmp_path.iterdir()) == [finding]
 
 
-def test_fallback_conditions_present_without_api(monkeypatch):
-    orch = Orchestrator(fake_agent)
-    monkeypatch.setattr("orchestrator.openai_generate_response", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
-    finding = {"claim": "", "files": ["examples/example1.py"]}
-    conds = orch.derive_conditions(finding)
-    assert [c.description for c in conds] == [
-        "Target file exists",
-        "Target file parses as Python",
-    ]
-
-
-def test_planner_emits_supported_tasks(monkeypatch):
-    orch = Orchestrator(fake_agent)
-
-    def boom(*a, **k):
-        raise RuntimeError("no llm")
-
-    monkeypatch.setattr("orchestrator.openai_generate_response", boom)
-    cond = Condition(description="Target file exists")
-    tasks = orch.generate_tasks(cond, Path("examples/example1.py"))
-    assert tasks and all(t["task"].startswith("stat:") for t in tasks)
-
-
 def test_judgement_shortcuts(monkeypatch):
     orch = Orchestrator(fake_agent)
     monkeypatch.setattr(
@@ -151,10 +128,6 @@ def test_judgement_shortcuts(monkeypatch):
 
     cond = Condition(description="Target file exists", evidence=[json.dumps({"type": "stat"})])
     assert orch.judge_condition(cond) == "satisfied"
-    cond2 = Condition(
-        description="Target file exists", evidence=[json.dumps({"error": "x"})]
-    )
-    assert orch.judge_condition(cond2) == "failed"
     cond3 = Condition(
         description="Target file parses as Python", evidence=[json.dumps({"type": "py:functions"})]
     )
