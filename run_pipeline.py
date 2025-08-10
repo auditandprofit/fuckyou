@@ -11,32 +11,17 @@ from agent import run_agent
 from orchestrator import Orchestrator
 from util.git import get_git_short, is_dirty
 from util.time import utc_now_iso, utc_timestamp
-from util.paths import repo_rel, REPO_ROOT
+from util.paths import REPO_ROOT
 from util.io import atomic_write
+from util.manifest import validate_manifest
+from util.openai import (
+    DEFAULT_MODEL,
+    DEFAULT_REASONING_EFFORT,
+    DEFAULT_SERVICE_TIER,
+)
 
 PROMPT_PREFIX = "Analyze file: "
 VERSION = "0.1"
-
-
-def validate_manifest(manifest_path: Path) -> list[Path]:
-    """Validate manifest file paths and return normalized repo-relative Paths."""
-    paths: list[Path] = []
-    seen: set[str] = set()
-    with open(manifest_path) as fh:
-        for line in fh:
-            entry = line.strip()
-            if not entry:
-                continue
-            rel = repo_rel(Path(entry))
-            abs_path = REPO_ROOT / rel
-            if not abs_path.exists():
-                raise FileNotFoundError(f"Missing manifest file: {entry}")
-            rel_str = rel.as_posix()
-            if rel_str in seen:
-                raise ValueError(f"Duplicate path in manifest: {entry}")
-            seen.add(rel_str)
-            paths.append(rel)
-    return sorted(paths, key=lambda p: p.as_posix())
 
 
 def write_run_json(run_path: Path, data: dict) -> None:
@@ -68,6 +53,7 @@ def main() -> None:
     fh = logging.FileHandler(run_path / "orchestrator.log")
     fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     logger.addHandler(fh)
+    logger.info("Run %s commit %s", run_id, git_short)
 
     run_data = {
         "run_id": run_id,
@@ -78,6 +64,12 @@ def main() -> None:
         "counts": {"manifest_files": 0, "findings_written": 0, "errors": 0},
         "git": {"commit": git_short, "dirty": is_dirty()},
         "version": VERSION,
+        "manifest_sha1": hashlib.sha1(manifest_path.read_bytes()).hexdigest(),
+        "llm": {
+            "model": DEFAULT_MODEL,
+            "reasoning_effort": DEFAULT_REASONING_EFFORT,
+            "service_tier": DEFAULT_SERVICE_TIER,
+        },
     }
     write_run_json(run_path, run_data)
 
@@ -87,7 +79,7 @@ def main() -> None:
     orch = Orchestrator(run_agent)
 
     try:
-        initial = orch.gather_initial_findings(manifest_path, PROMPT_PREFIX)
+        initial = orch.gather_initial_findings(manifest_files, PROMPT_PREFIX)
     except Exception as exc:  # pragma: no cover - unexpected
         logger.error("initial gathering failed: %s", exc)
         initial = []
@@ -100,6 +92,8 @@ def main() -> None:
             finding_id = hashlib.sha1(rel_path.as_posix().encode()).hexdigest()[:12]
             finding = {
                 "finding_id": finding_id,
+                "schema_version": 1,
+                "orchestrator_version": Orchestrator.VERSION,
                 "claim": f["claim"],
                 "files": f["files"],
                 "evidence": {"seed": f["evidence"]},
