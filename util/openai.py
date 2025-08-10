@@ -97,12 +97,14 @@ def openai_generate_response(
 
     tools: List[Dict[str, Any]] = []
     if functions:
-        tools.extend({"type": "function", **f} for f in functions)
+        # Responses API shape: each tool is {"type":"function","function":{name,description,parameters}}
+        tools = [{"type": "function", "function": f} for f in functions]
 
+    # Prefer Responses API. If callers passed Chat-style `messages`, we still put them in `input`.
     params: Dict[str, Any] = {
         "model": model,
-        "input": messages,
-        "tools": tools,
+        "input": messages,  # Responses accepts free-form input; we pass chat-style for continuity.
+        "tools": tools or None,
         "reasoning": {"effort": reasoning_effort},
         "service_tier": service_tier,
         "temperature": temperature,
@@ -111,7 +113,7 @@ def openai_generate_response(
 
     logging.info("Sending:\n%s", messages)
     response = client.responses.create(**params)
-    logging.info("Received:\n%s", response)
+    logging.info("Received (truncated):\n%s", str(response)[:4000])
     save_cache(key, response)
     return response
 
@@ -123,27 +125,57 @@ def _get(obj, attr, default=None):
 
 
 def openai_parse_function_call(response: Any) -> Tuple[Optional[str], Any]:
-    """Extract function call data from a Responses API result."""
-    fc = None
+    """Extract function call data from Responses API or Chat Completions."""
+    # --- Responses API path ---
     output = _get(response, "output", []) or []
+    # Direct items (e.g., {"type":"tool_call"/"function_call"/"tool_use"})
     for item in output:
-        if _get(item, "type") in {"function_call", "tool_call"}:
-            fc = item
-            break
-    if not fc and output:
-        msg = output[0]
-        content = _get(msg, "content", []) or []
-        for item in content:
-            if _get(item, "type") == "tool_call":
-                fc = item
-                break
-    if not fc:
-        return None, None
-    name = _get(fc, "name")
-    args_str = _get(fc, "arguments", "") or "{}"
-    try:
-        data = json.loads(args_str)
-    except json.JSONDecodeError:
-        data = {}
-    logging.info("Function call %s with %s", name, data)
-    return name, data
+        t = _get(item, "type")
+        if t in {"tool_call", "function_call", "tool_use"}:
+            name = _get(item, "name") or _get(_get(item, "function", {}), "name")
+            args_raw = _get(item, "arguments") or _get(item, "input") or "{}"
+            try:
+                args = args_raw if isinstance(args_raw, dict) else json.loads(args_raw)
+            except Exception:
+                args = {}
+            return name, args
+    # Nested inside message.content (some SDKs wrap tool calls there)
+    if output:
+        content = _get(output[0], "content", []) or []
+        for c in content:
+            if _get(c, "type") in {"tool_call", "function_call", "tool_use"}:
+                name = _get(c, "name") or _get(_get(c, "function", {}), "name")
+                args_raw = _get(c, "arguments") or _get(c, "input") or "{}"
+                try:
+                    args = args_raw if isinstance(args_raw, dict) else json.loads(args_raw)
+                except Exception:
+                    args = {}
+                return name, args
+
+    # --- Chat Completions fallback ---
+    choices = _get(response, "choices", []) or []
+    if choices:
+        msg = _get(choices[0], "message", {}) or {}
+        # tool_calls (Tools API)
+        tcs = _get(msg, "tool_calls", []) or []
+        if tcs:
+            tc = tcs[0]
+            func = _get(tc, "function", {}) or {}
+            name = _get(func, "name")
+            args_raw = _get(func, "arguments", "{}") or "{}"
+            try:
+                args = json.loads(args_raw)
+            except Exception:
+                args = {}
+            return name, args
+        # function_call (legacy)
+        fc = _get(msg, "function_call", {}) or {}
+        if fc:
+            name = _get(fc, "name")
+            args_raw = _get(fc, "arguments", "{}") or "{}"
+            try:
+                args = json.loads(args_raw)
+            except Exception:
+                args = {}
+            return name, args
+    return None, None
