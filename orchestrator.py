@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List
 import json
+import logging
 
 
 # ----- Stubs -----------------------------------------------------------------
@@ -46,6 +47,7 @@ class Orchestrator:
 
     def __init__(self, agent: Callable[[str], str]):
         self.agent = agent
+        self.logger = logging.getLogger(__name__)
 
     # -- Seed input -----------------------------------------------------------
     def load_manifest(self, manifest_path: Path) -> List[Path]:
@@ -80,7 +82,8 @@ class Orchestrator:
         return None
 
     def process_findings(self, findings_dir: Path) -> None:
-        for finding_file in findings_dir.glob("*.json"):
+        for finding_file in findings_dir.glob("finding_*.json"):
+            self.logger.info("Processing %s", finding_file.name)
             with open(finding_file) as fh:
                 finding = json.load(fh)
             conditions = self.derive_conditions(finding)
