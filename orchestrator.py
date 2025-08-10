@@ -11,14 +11,17 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List
+import hashlib
 import json
 import logging
+import re
 
 from util.io import atomic_write
 from util.openai import (
     openai_generate_response,
     openai_parse_function_call,
 )
+from util.time import utc_now_iso
 
 
 # ----- Data structures -------------------------------------------------------
@@ -46,26 +49,23 @@ class Condition:
 class Orchestrator:
     """Coordinate finding generation and condition evaluation."""
 
+    VERSION = "0.1"
+
     def __init__(self, agent: Callable[[str], str]):
         self.agent = agent
         self.logger = logging.getLogger(__name__)
 
     # -- Seed input -----------------------------------------------------------
-    def load_manifest(self, manifest_path: Path) -> List[Path]:
-        with open(manifest_path) as fh:
-            return [Path(line.strip()) for line in fh if line.strip()]
-
     def gather_initial_findings(
-        self, manifest_path: Path, prompt_prefix: str
+        self, manifest_files: List[Path], prompt_prefix: str
     ) -> List[Dict]:
         findings: List[Dict] = []
-        for code_path in self.load_manifest(manifest_path):
-            prompt = f"{prompt_prefix}{code_path}"
+        for code_path in manifest_files:
+            prompt = f"{prompt_prefix}{code_path.as_posix()}"
             agent_response = self.agent(prompt)
-            claim = str(agent_response).strip() or f"Review {code_path}"
             finding = {
-                "claim": claim,
-                "files": [str(code_path)],
+                "claim": f"Review {code_path.as_posix()}",
+                "files": [code_path.as_posix()],
                 "evidence": agent_response,
             }
             findings.append(finding)
@@ -119,10 +119,38 @@ class Orchestrator:
             return conds
         except Exception as exc:  # pragma: no cover - network/credential issues
             self.logger.warning("condition generation failed: %s", exc)
-            return []
+            code_path = Path(finding["files"][0]) if finding.get("files") else Path("?")
+            conds = [Condition(description="Target file exists")]
+            if code_path.suffix == ".py":
+                conds.append(Condition(description="Target file parses as Python"))
+            return conds
 
-    def generate_tasks(self, condition: Condition) -> List[str]:
-        """Generate tasks to gather evidence for ``condition`` using the LLM."""
+    def _plan_tasks(self, condition: Condition, code_path: Path) -> List[str]:
+        desc = condition.description.lower()
+        tasks: List[str] = []
+        path = code_path.as_posix()
+        if "exists" in desc:
+            tasks.append(f"stat:{path}")
+        if "parses" in desc and code_path.suffix == ".py":
+            tasks.append(f"py:functions:{path}")
+        return tasks
+
+    def _normalize_task(self, text: str, code_path: Path) -> str | None:
+        t = text.lower()
+        path = code_path.as_posix()
+        if re.search(r"stat|exists", t):
+            return f"stat:{path}"
+        if code_path.suffix == ".py":
+            if re.search(r"functions|parse|syntax", t):
+                return f"py:functions:{path}"
+            if "class" in t:
+                return f"py:classes:{path}"
+        if "read" in t:
+            return f"read:{path}"
+        return None
+
+    def generate_tasks(self, condition: Condition, code_path: Path) -> List[dict]:
+        """Generate tasks to gather evidence for ``condition``."""
         messages = [
             {"role": "system", "content": "You generate step-by-step tasks."},
             {
@@ -146,6 +174,7 @@ class Orchestrator:
                 },
             }
         ]
+        tasks: List[dict] = []
         try:
             response = openai_generate_response(
                 messages=messages,
@@ -154,15 +183,34 @@ class Orchestrator:
                 temperature=0,
             )
             _, data = openai_parse_function_call(response)
-            return data.get("tasks", [])
+            for t in data.get("tasks", []) or []:
+                norm = self._normalize_task(t, code_path)
+                if norm:
+                    tasks.append({"task": norm, "original": t})
         except Exception as exc:  # pragma: no cover
             self.logger.warning("task generation failed: %s", exc)
-            return []
+        if not tasks:
+            for t in self._plan_tasks(condition, code_path):
+                tasks.append({"task": t, "original": t})
+        return tasks
 
     def judge_condition(self, condition: Condition) -> str:
-        """Use the LLM to judge whether ``condition`` is satisfied."""
+        """Deterministically judge ``condition`` based on available evidence."""
         if not condition.evidence:
             return "unknown"
+        latest = condition.evidence[-1]
+        try:
+            data = json.loads(latest)
+        except Exception:
+            data = {}
+        if data.get("error"):
+            if "exists" in condition.description.lower() or "parses" in condition.description.lower():
+                return "failed"
+        typ = data.get("type")
+        if typ == "stat":
+            return "satisfied"
+        if typ == "py:functions":
+            return "satisfied"
         messages = [
             {
                 "role": "system",
@@ -253,16 +301,36 @@ class Orchestrator:
         except Exception:  # pragma: no cover - openai failure
             return []
 
-    def _execute_tasks(self, finding_file: Path, condition: Condition, tasks: list[str]) -> list[dict]:
+    def _execute_tasks(self, finding_file: Path, condition: Condition, tasks: List[dict]) -> List[dict]:
         """Execute tasks via agent and persist a task log blob."""
-        task_results = []
+        task_results: List[dict] = []
         for t in tasks:
+            goal = t["task"]
+            original = t.get("original", goal)
+            stamp = utc_now_iso()
+            goal_hash = hashlib.sha1(goal.encode()).hexdigest()
             try:
-                out = self.agent(t)
-                task_results.append({"task": t, "output": out})
-                condition.evidence.append(str(out)[:10000])
+                out = self.agent(goal)
+                task_results.append(
+                    {
+                        "task": goal,
+                        "original": original,
+                        "output": out,
+                        "timestamp": stamp,
+                        "input_sha1": goal_hash,
+                    }
+                )
+                condition.evidence.append(json.dumps(out)[:10000])
             except Exception as exc:
-                task_results.append({"task": t, "error": str(exc)})
+                task_results.append(
+                    {
+                        "task": goal,
+                        "original": original,
+                        "error": str(exc),
+                        "timestamp": stamp,
+                        "input_sha1": goal_hash,
+                    }
+                )
         with open(finding_file) as fh:
             data = json.load(fh)
         data.setdefault("tasks_log", []).append(
@@ -275,8 +343,11 @@ class Orchestrator:
         self, condition: Condition, finding_path: Path, *, max_steps: int = 3
     ) -> None:
         """Resolve a condition by iterating generate→execute→judge cycles."""
+        with open(finding_path) as fh:
+            finding = json.load(fh)
+        code_path = Path(finding.get("provenance", {}).get("path", ""))
         for step in range(max_steps):
-            tasks = self.generate_tasks(condition)
+            tasks = self.generate_tasks(condition, code_path)
             if not tasks:
                 break
             self.logger.info(

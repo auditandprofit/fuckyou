@@ -126,6 +126,29 @@ def test_seeded_findings_have_claim_and_evidence():
         assert "conditions" in data
 
 
+def test_manifest_is_single_source(monkeypatch):
+    import run_pipeline as rp
+
+    manifest = Path("manifest.txt")
+    manifest.write_text("examples/example1.py")
+    called = {}
+
+    def fake_validate(path):
+        called["validate"] = True
+        return [Path("examples/example1.py")]
+
+    def fake_gather(self, files, prefix):
+        called["gather"] = files
+        return []
+
+    monkeypatch.setattr(rp, "validate_manifest", fake_validate)
+    monkeypatch.setattr("orchestrator.Orchestrator.gather_initial_findings", fake_gather)
+
+    rp.main()
+    assert called.get("validate") is True
+    assert called.get("gather") == [Path("examples/example1.py")]
+
+
 def test_atomic_write_no_partial_on_error(tmp_path, monkeypatch):
     target = tmp_path / "out.txt"
 
