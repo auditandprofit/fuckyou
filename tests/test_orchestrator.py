@@ -6,7 +6,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from orchestrator import Orchestrator, Condition
+from orchestrator import Orchestrator, Condition, _verb
 
 
 def fake_agent(goal: str) -> str:
@@ -246,3 +246,9 @@ def test_verdict_false_positive_precedence(tmp_path, monkeypatch):
     orch.process_findings(tmp_path, max_steps=0)
     data = json.loads(finding_file.read_text())
     assert data["verdict"]["state"] == "FALSE_POSITIVE"
+
+
+def test_verb_handles_empty():
+    assert _verb("") == ""
+    assert _verb("   ") == ""
+    assert _verb("search foo") == "search"

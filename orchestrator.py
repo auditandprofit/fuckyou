@@ -82,7 +82,8 @@ def _latest_success(ev_list):
 
 
 def _verb(s: str) -> str:
-    return (s.split(None, 1)[0] or "").lower()
+    parts = s.split(None, 1)
+    return parts[0].lower() if parts else ""
 
 
 SINK_KEYWORDS = ["subprocess", "tarfile", "yaml.load"]

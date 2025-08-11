@@ -1,6 +1,9 @@
 import os
 import threading
 import _thread
+import os
+import shutil
+import subprocess
 import pytest
 from codex_dispatch import CodexClient
 
@@ -47,3 +50,22 @@ open(out_path, 'w').write(json.dumps({}))
     client = CodexClient(bin_path=str(codex))
     result = client.exec(prompt="", workdir=str(tmp_path))
     assert all("--dangerously-bypass-approvals-and-sandbox" not in c for c in result.cmd)
+
+
+def test_wrap_no_network(monkeypatch, tmp_path):
+    codex = tmp_path / "codex"
+    codex.write_text("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then exit 0; fi\n")
+    codex.chmod(0o755)
+
+    monkeypatch.setattr(shutil, "which", lambda n: "/bin/firejail" if n == "firejail" else None)
+    client = CodexClient(bin_path=str(codex))
+    assert client._wrap_no_network(["cmd"])[:3] == ["/bin/firejail", "--quiet", "--net=none"]
+
+    monkeypatch.setattr(shutil, "which", lambda n: "/bin/unshare" if n == "unshare" else None)
+    monkeypatch.setattr(subprocess, "check_call", lambda *a, **k: 0)
+    client = CodexClient(bin_path=str(codex))
+    assert client._wrap_no_network(["cmd"])[:2] == ["/bin/unshare", "-n"]
+
+    monkeypatch.setattr(shutil, "which", lambda n: None)
+    client = CodexClient(bin_path=str(codex))
+    assert client._wrap_no_network(["cmd"]) == ["cmd"]
