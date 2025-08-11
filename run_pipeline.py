@@ -163,6 +163,9 @@ def main(argv: list[str] | None = None) -> None:
     except Exception as exc:  # pragma: no cover - unexpected
         logger.error("initial gathering failed: %s", exc)
         initial = []
+    run_data["auto_lensed_files"] = len(orch.auto_lensed_files)
+    run_data["discover_runs_by_lens"] = dict(orch.discover_runs_by_lens)
+    run_data["unique_claims_per_lens"] = dict(orch.unique_claims_per_lens)
 
     for f in initial:
         try:
@@ -209,6 +212,19 @@ def main(argv: list[str] | None = None) -> None:
         run_data["finished_at"] = utc_now_iso()
         write_run_json(run_path, run_data)
         raise SystemExit(1)
+
+    run_data["breadth_examined"] = orch.breadth_examined
+    run_data["depth_escalated"] = orch.depth_escalated
+    run_data["escalation_hit_rate"] = (
+        orch.escalation_hits / orch.depth_escalated
+        if orch.depth_escalated
+        else 0
+    )
+    run_data["avg_unique_verbs_per_condition_step2"] = (
+        sum(orch._verb_counts) / len(orch._verb_counts)
+        if orch._verb_counts
+        else 0
+    )
 
     run_data["finished_at"] = utc_now_iso()
     write_run_json(run_path, run_data)

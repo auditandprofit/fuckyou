@@ -9,7 +9,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, List
+from typing import Callable, Dict, List, Set
+from collections import defaultdict
 import hashlib
 import json
 import logging
@@ -23,6 +24,7 @@ from util.openai import (
     openai_parse_function_call,
 )
 from util.time import utc_now_iso
+from util.imports import variants_for
 
 BANNER = (
     "Deterministic security auditor. No network. No writes. JSON only. "
@@ -47,6 +49,8 @@ class Condition:
     evidence_refs: List[int] = field(default_factory=list)
     evidence: List[str] = field(default_factory=list)
     subconditions: List["Condition"] = field(default_factory=list)
+    last_verb: str = ""
+    used_verbs: Set[str] = field(default_factory=set, repr=False)
 
     def to_dict(self) -> Dict:
         return {
@@ -81,6 +85,36 @@ def _verb(s: str) -> str:
     return (s.split(None, 1)[0] or "").lower()
 
 
+SINK_KEYWORDS = ["subprocess", "tarfile", "yaml.load"]
+
+
+def _score_condition(condition: Condition) -> int:
+    """Heuristic score for whether to deepen a condition."""
+    score = 0
+    obs = _latest_success(condition.evidence)
+    if not obs:
+        return score
+    summary = obs.get("summary", "")
+    if not summary.startswith("error:") and obs.get("citations"):
+        score += 2
+        for c in obs.get("citations", []):
+            try:
+                fp = Path(c.get("path", ""))
+                lines = fp.read_text().splitlines()
+                snippet = "\n".join(
+                    lines[c.get("start_line", 1) - 1 : c.get("end_line", 1)]
+                )
+                if any(kw in snippet for kw in SINK_KEYWORDS):
+                    score += 2
+                    break
+            except Exception:
+                continue
+    text = (summary + " " + obs.get("notes", "")).lower()
+    if any(w in text for w in ["user-controlled", "taint", "entrypoint"]):
+        score += 1
+    return score
+
+
 # ----- Orchestrator ----------------------------------------------------------
 
 class Orchestrator:
@@ -93,6 +127,16 @@ class Orchestrator:
         self.logger = logging.getLogger(__name__)
         self.max_retries = int(os.getenv("ANCHOR_OPENAI_RETRIES", "3"))
         self.reporter = reporter
+        self.auto_lens = os.getenv("ANCHOR_AUTO_LENS", "1") not in {"0", "false", "False"}
+        self.plan_diversity = os.getenv("ANCHOR_PLAN_DIVERSITY", "1") not in {"0", "false", "False"}
+        self.bfs_budget = int(os.getenv("ANCHOR_BFS_BUDGET", "10"))
+        self.auto_lensed_files: Set[str] = set()
+        self.discover_runs_by_lens = defaultdict(int)
+        self.unique_claims_per_lens = defaultdict(int)
+        self.breadth_examined = 0
+        self.depth_escalated = 0
+        self.escalation_hits = 0
+        self._verb_counts: List[int] = []
 
     def _with_retries(self, func: Callable, *args, **kwargs):
         last_exc = None
@@ -115,19 +159,28 @@ class Orchestrator:
     def gather_initial_findings(
         self, manifest_files: List[Path]
     ) -> List[Dict]:
-        VARIANTS = ["", "deser", "authz", "path", "exec"]
         findings: List[Dict] = []
         seen: set[tuple[str, str]] = set()
         for code_path in manifest_files:
-            for v in VARIANTS:
+            variants = [""]
+            if self.auto_lens:
+                extra = variants_for(code_path)
+                if extra:
+                    self.auto_lensed_files.add(code_path.as_posix())
+                variants.extend(extra)
+            else:
+                variants.extend(["deser", "authz", "path", "exec"])
+            for v in variants[:3]:
+                lens = v or "default"
                 self.logger.info(
-                    "Discovering %s::%s", code_path.as_posix(), v or "default"
+                    "Discovering %s::%s", code_path.as_posix(), lens
                 )
+                self.discover_runs_by_lens[lens] += 1
                 data = self.agent(
                     f"codex:discover:{code_path.as_posix()}::{v}"
                 )
                 self.logger.info(
-                    "Discovered %s::%s", code_path.as_posix(), v or "default"
+                    "Discovered %s::%s", code_path.as_posix(), lens
                 )
                 if isinstance(data, str):
                     claim, files, evidence = data.strip(), [code_path.as_posix()], {}
@@ -148,6 +201,7 @@ class Orchestrator:
                 if key in seen:
                     continue
                 seen.add(key)
+                self.unique_claims_per_lens[lens] += 1
                 findings.append({"claim": claim, "files": files, "evidence": evidence})
         return findings
 
@@ -352,9 +406,18 @@ class Orchestrator:
                 }
             )
 
-        prev_verb = getattr(condition, "last_verb", "") if last_sum.startswith("error:") else ""
-        if prev_verb:
-            tasks = [t for t in tasks if _verb(t.get("original", "")) != prev_verb]
+        prev_verb = condition.last_verb
+        if self.plan_diversity and prev_verb:
+            alt = [t for t in tasks if _verb(t.get("original", "")) != prev_verb]
+            if alt:
+                tasks = alt
+
+        if self.plan_diversity and len(condition.used_verbs) < 3:
+            tasks = [
+                t
+                for t in tasks
+                if _verb(t.get("original", "")) not in condition.used_verbs
+            ] or tasks
 
         filtered: List[dict] = []
         verbs = set()
@@ -380,7 +443,9 @@ class Orchestrator:
             )
         if self.reporter:
             self.reporter.log(
-                "tasks:plan", tasks=[t.get("task", "") for t in tasks]
+                "tasks:plan",
+                tasks=[t.get("task", "") for t in tasks],
+                verbs=[_verb(t.get("original", "")) for t in tasks],
             )
         return tasks
 
@@ -629,7 +694,9 @@ class Orchestrator:
                 )
 
         if pairs:
-            condition.last_verb = _verb(pairs[-1][0].get("original", ""))
+            verbs = [_verb(p[0].get("original", "")) for p in pairs]
+            condition.used_verbs.update(verbs)
+            condition.last_verb = verbs[-1]
 
         finding.setdefault("tasks_log", []).append(
             {"condition": condition.description, "executed": task_results}
@@ -641,13 +708,18 @@ class Orchestrator:
         return task_results
 
     def resolve_condition(
-        self, condition: Condition, finding_path: Path, *, max_steps: int = 3
+        self,
+        condition: Condition,
+        finding_path: Path,
+        *,
+        max_steps: int = 3,
+        start_step: int = 0,
     ) -> None:
         """Resolve a condition by iterating generate→execute→judge cycles."""
         with open(finding_path) as fh:
             finding = json.load(fh)
         code_path = Path(finding.get("provenance", {}).get("path", ""))
-        for step in range(max_steps):
+        for step in range(start_step, max_steps):
             self.logger.info(
                 "Resolve step %d for condition '%s'", step + 1, condition.description
             )
@@ -683,6 +755,8 @@ class Orchestrator:
                     return
 
     def process_findings(self, findings_dir: Path, *, max_steps: int = 3) -> None:
+        all_data = []
+        scored: List[tuple[int, Condition, Path, Dict]] = []
         for finding_file in findings_dir.glob("finding_*.json"):
             self.logger.info("Processing %s", finding_file.name)
             with open(finding_file) as fh:
@@ -697,8 +771,33 @@ class Orchestrator:
                 "Derived %d conditions for %s", len(conditions), finding_file.name
             )
             for condition in conditions:
-                self.resolve_condition(condition, finding_file, max_steps=max_steps)
-            # reload tasks_log in case tasks were executed
+                self.logger.info(
+                    "breadth_pass=1 for condition '%s'", condition.description
+                )
+                self.resolve_condition(condition, finding_file, max_steps=1)
+                scored.append((
+                    _score_condition(condition),
+                    condition,
+                    finding_file,
+                    finding,
+                ))
+            all_data.append((finding_file, finding, conditions))
+
+        self.breadth_examined = len(scored)
+        for score, condition, finding_file, finding in sorted(
+            scored, key=lambda x: x[0], reverse=True
+        )[: self.bfs_budget]:
+            if condition.state != "unknown":
+                continue
+            self.logger.info(
+                "depth_pass=2 for condition '%s'", condition.description
+            )
+            self.resolve_condition(condition, finding_file, max_steps=max_steps, start_step=1)
+            self.depth_escalated += 1
+            if condition.state in {"satisfied", "failed"}:
+                self.escalation_hits += 1
+
+        for finding_file, finding, conditions in all_data:
             with open(finding_file) as fh:
                 updated = json.load(fh)
             finding["tasks_log"] = updated.get("tasks_log", [])
@@ -722,3 +821,6 @@ class Orchestrator:
             atomic_write(finding_file, json.dumps(finding, indent=2).encode())
             if self.reporter:
                 self.reporter.log("finding:complete")
+            for c in conditions:
+                if c.used_verbs:
+                    self._verb_counts.append(len(c.used_verbs))
