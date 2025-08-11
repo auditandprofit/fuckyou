@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -119,10 +120,27 @@ class CodexClient:
                     )
                     th_out.start()
                     th_err.start()
-                    proc.wait(timeout=timeout)
+                    try:
+                        proc.wait(timeout=timeout)
+                    except subprocess.TimeoutExpired as exc:
+                        proc.kill()
+                        proc.wait()
+                        th_out.join()
+                        th_err.join()
+                        if attempt > self.retries:
+                            raise CodexTimeout(str(exc)) from exc
+                        time.sleep(self.backoff_base ** attempt)
+                        continue
+                    except KeyboardInterrupt:
+                        proc.send_signal(signal.SIGINT)
+                        proc.wait()
+                        th_out.join()
+                        th_err.join()
+                        raise
                     th_out.join()
                     th_err.join()
                 except subprocess.TimeoutExpired as exc:
+                    # Safety net if Popen itself times out (rare)
                     proc.kill()
                     proc.wait()
                     th_out.join()
