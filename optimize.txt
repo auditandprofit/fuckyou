@@ -1,0 +1,23 @@
+Got it—optimize for two goals:
+
+# Find novel zero-days (recall)
+
+1. **LLM interface & prompts** – diversify “discover/plan” to explore cross-file flows and alternate attack paths; force op-class variety.
+2. **Orchestration** – add repo-wide hotspot discovery + de-dupe; allow branching/narrowing loops to chase promising leads.
+3. **Agent execution** – solid callgraph/taint/dataflow primitives (read-only) so plans can actually prove reachability.
+4. **Performance** – concurrency + budgeted breadth first (cheap searches → targeted deep dives).
+5. **Testing/evals** – small seed corpora to tune discovery prompts toward real vulns.
+
+# Lower false positives (precision)
+
+1. **Evidence & provenance** – require citation verifier (bounds-check lines, file sha1, excerpt); snapshot evidence.
+2. **Data shapes & judge rules** – rule-assist judging (guard-before-sink, path coverage); add an **INCONSISTENT** state instead of vague UNKNOWN.
+3. **Determinism & reproducibility** – pin models/versions; rich cache keys; stable reruns cut drift-induced FPs.
+4. **Failure handling** – treat analyzer errors as UNKNOWN with guidance, not as passes; enforce op-class switch after errors.
+5. **Observability** – per-reason FP analytics to fix prompts/plans quickly.
+
+If you must pick one lever each:
+
+* **Recall:** LLM interface + orchestration.
+* **Precision:** Evidence verifier + rule-based judge.
+
