@@ -118,9 +118,10 @@ def openai_generate_response(
         "input": messages,  # Responses accepts free-form input; we pass chat-style for continuity.
         "reasoning": {"effort": reasoning_effort},
         "service_tier": service_tier,
-        "temperature": temperature,
         **extra,
     }
+    if not model.startswith("o"):
+        params["temperature"] = temperature
 
     if tools:
         params["tools"] = tools
