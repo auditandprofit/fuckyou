@@ -81,7 +81,7 @@ class LiveTextFormatter:
         self.idx["finding_total"] = manifest
         self._print_line(0, f"RUN {run_id}  model={model}  manifest={manifest}")
 
-    def _on_finding_open(self, claim: str, path: str) -> None:
+    def _on_finding_open(self, claim: str, path: str, seed_source: str | None = None) -> None:
         self.idx["finding"] += 1
         self.ctx.update(
             {
@@ -94,7 +94,10 @@ class LiveTextFormatter:
         self.conditions = []
         self.in_tasks = False
         prefix = "└─ " if self.is_tty else "Finding: "
-        text = f"{prefix}Finding {self.idx['finding']}/{self.idx['finding_total']}  {path}  \"{claim}\""
+        extra = f" source={seed_source}" if seed_source else ""
+        text = (
+            f"{prefix}Finding {self.idx['finding']}/{self.idx['finding_total']}  {path}  \"{claim}\"{extra}"
+        )
         if self.is_tty:
             self._print_line(0, text)
         else:

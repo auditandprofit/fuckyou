@@ -20,6 +20,7 @@ from util import paths
 from util.io import atomic_write
 from util.manifest import validate_manifest
 from util.hotspots import find as find_hotspots
+from util.git_diff import git_changed_files
 import util.openai as openai
 
 VERSION = "0.1"
@@ -44,6 +45,12 @@ def parse_args(argv: list[str] | None = None):
         "--verbose",
         action="store_true",
         help="Echo orchestrator logs to stderr",
+    )
+    ap.add_argument("--git-since", default=os.getenv("ANCHOR_GIT_SINCE"))
+    ap.add_argument(
+        "--git-window",
+        type=int,
+        default=int(os.getenv("ANCHOR_GIT_WINDOW", "14")),
     )
     return ap.parse_args(argv)
 
@@ -116,9 +123,28 @@ def main(argv: list[str] | None = None) -> None:
     logger.info("Validating manifest")
     try:
         manifest_files = validate_manifest(manifest_path)
+        seed_sources = {p.as_posix(): "manual" for p in manifest_files}
+        hotspot_scores: dict[str, int] = {}
         if os.getenv("ANCHOR_HOTSPOTS", "1") not in {"0", "false", "False"}:
-            hot = [paths.repo_rel(p) for p in find_hotspots(repo_root)]
-            manifest_files = sorted(set(manifest_files + hot), key=lambda p: p.as_posix())
+            cats_env = os.getenv("ANCHOR_HOTSPOT_CATEGORIES", "")
+            cats = {c.strip() for c in cats_env.split(",") if c.strip()} or None
+            hot_info = find_hotspots(repo_root, categories=cats)
+            hot_paths = []
+            for p, cat, score in hot_info:
+                rel = paths.repo_rel(p)
+                hot_paths.append(rel)
+                hotspot_scores[rel.as_posix()] = score
+                seed_sources.setdefault(rel.as_posix(), "hotspot")
+            manifest_files = list(dict.fromkeys(manifest_files + hot_paths))
+            manifest_files.sort(
+                key=lambda p: hotspot_scores.get(p.as_posix(), 0), reverse=True
+            )
+        changed_paths = git_changed_files(args.git_since, args.git_window)
+        if changed_paths:
+            changed = [paths.repo_rel(p) for p in changed_paths]
+            for p in changed:
+                seed_sources[p.as_posix()] = "diff"
+            manifest_files = list(dict.fromkeys(changed + manifest_files))
     except Exception as exc:
         logger.error("Manifest error: %s", exc)
         fh.close()
@@ -159,17 +185,20 @@ def main(argv: list[str] | None = None) -> None:
     orch = Orchestrator(codex_agent.run, reporter=reporter)
 
     try:
-        initial = orch.gather_initial_findings(manifest_files)
+        initial = orch.gather_initial_findings(manifest_files, seed_sources)
     except Exception as exc:  # pragma: no cover - unexpected
         logger.error("initial gathering failed: %s", exc)
         initial = []
     run_data["auto_lensed_files"] = len(orch.auto_lensed_files)
     run_data["discover_runs_by_lens"] = dict(orch.discover_runs_by_lens)
     run_data["unique_claims_per_lens"] = dict(orch.unique_claims_per_lens)
+    run_data["novel_cwe_families"] = sorted(run_data["unique_claims_per_lens"].keys())
+    seed_counts = {"hotspot": 0, "dep": 0, "diff": 0, "manual": 0}
 
     for f in initial:
         try:
             rel_path = Path(f["files"][0])
+            seed_src = f.get("seed_source", "manual")
             abs_path = repo_root / rel_path
             file_bytes = abs_path.read_bytes()
             finding_id = hashlib.sha1(rel_path.as_posix().encode()).hexdigest()[:12]
@@ -180,6 +209,7 @@ def main(argv: list[str] | None = None) -> None:
                 "claim": f["claim"],
                 "files": f["files"],
                 "evidence": {"seed": f["evidence"]},
+                "seed_source": seed_src,
                 "provenance": {
                     "run_id": run_id,
                     "created_at": utc_now_iso(),
@@ -198,11 +228,14 @@ def main(argv: list[str] | None = None) -> None:
                 run_path / f"finding_{finding_id}.json",
                 json.dumps(finding, indent=2).encode(),
             )
+            seed_counts[seed_src] += 1
             counts["findings_written"] += 1
             logger.info("Seeded finding %s", finding_id)
         except Exception as exc:  # per-file errors
             logger.error("Error processing %s: %s", f, exc)
             counts["errors"] += 1
+
+    run_data["seed_sources"] = seed_counts
 
     try:
         orch.process_findings(run_path)
@@ -225,6 +258,12 @@ def main(argv: list[str] | None = None) -> None:
         if orch._verb_counts
         else 0
     )
+    run_data["conditions_decided_pct"] = {
+        k: (
+            orch.conditions_decided_by_source[k] / v if v else 0
+        )
+        for k, v in orch.conditions_total_by_source.items()
+    }
 
     run_data["finished_at"] = utc_now_iso()
     write_run_json(run_path, run_data)

@@ -51,6 +51,12 @@ class CodexAgent:
                 "authz": "Lens:\n- Focus on authorization or privilege checks.\n\n",
                 "path": "Lens:\n- Focus on path traversal or archive extraction.\n\n",
                 "exec": "Lens:\n- Focus on dynamic execution or shelling out.\n\n",
+                "ssrf": "Lens:\n- Focus on server-side request forgery from user URLs.\n\n",
+                "template": "Lens:\n- Focus on template injection or unsafe rendering.\n\n",
+                "crypto": "Lens:\n- Focus on weak or mishandled cryptography.\n\n",
+                "xxe": "Lens:\n- Focus on XML external entity expansion.\n\n",
+                "sql": "Lens:\n- Focus on unparameterized SQL queries.\n\n",
+                "cloud-iam": "Lens:\n- Focus on overly broad cloud IAM permissions.\n\n",
             }
             lens_text = lenses.get(variant, "")
             return (

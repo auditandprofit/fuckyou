@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, List, Set
+from typing import Callable, Dict, List, Set, Tuple
 from collections import defaultdict
 import hashlib
 import json
@@ -137,6 +137,8 @@ class Orchestrator:
         self.depth_escalated = 0
         self.escalation_hits = 0
         self._verb_counts: List[int] = []
+        self.conditions_total_by_source = defaultdict(int)
+        self.conditions_decided_by_source = defaultdict(int)
 
     def _with_retries(self, func: Callable, *args, **kwargs):
         last_exc = None
@@ -157,20 +159,23 @@ class Orchestrator:
 
     # -- Seed input -----------------------------------------------------------
     def gather_initial_findings(
-        self, manifest_files: List[Path]
+        self, manifest_files: List[Path], source_map: dict[str, str]
     ) -> List[Dict]:
         findings: List[Dict] = []
         seen: set[tuple[str, str]] = set()
         for code_path in manifest_files:
-            variants = [""]
+            base_src = source_map.get(code_path.as_posix(), "manual")
+            variants: List[Tuple[str, str]] = [("", base_src)]
             if self.auto_lens:
                 extra = variants_for(code_path)
                 if extra:
                     self.auto_lensed_files.add(code_path.as_posix())
-                variants.extend(extra)
+                for lens, src in extra:
+                    seed_src = "dep" if src == "dep" else base_src
+                    variants.append((lens, seed_src))
             else:
-                variants.extend(["deser", "authz", "path", "exec"])
-            for v in variants[:3]:
+                variants.extend([(v, base_src) for v in ["deser", "authz", "path", "exec"]])
+            for v, seed_src in variants[:3]:
                 lens = v or "default"
                 self.logger.info(
                     "Discovering %s::%s", code_path.as_posix(), lens
@@ -202,7 +207,14 @@ class Orchestrator:
                     continue
                 seen.add(key)
                 self.unique_claims_per_lens[lens] += 1
-                findings.append({"claim": claim, "files": files, "evidence": evidence})
+                findings.append(
+                    {
+                        "claim": claim,
+                        "files": files,
+                        "evidence": evidence,
+                        "seed_source": seed_src,
+                    }
+                )
         return findings
 
     # -- Orchestration per finding -------------------------------------------
@@ -763,8 +775,11 @@ class Orchestrator:
                 finding = json.load(fh)
             claim = finding.get("claim", "")
             path = finding.get("provenance", {}).get("path", "")
+            seed_src = finding.get("seed_source", "manual")
             if self.reporter:
-                self.reporter.log("finding:open", claim=claim, path=path)
+                self.reporter.log(
+                    "finding:open", claim=claim, path=path, seed_source=seed_src
+                )
             self.logger.info("Deriving conditions for %s", finding_file.name)
             conditions = self.derive_conditions(finding)
             self.logger.info(
@@ -775,12 +790,17 @@ class Orchestrator:
                     "breadth_pass=1 for condition '%s'", condition.description
                 )
                 self.resolve_condition(condition, finding_file, max_steps=1)
-                scored.append((
-                    _score_condition(condition),
-                    condition,
-                    finding_file,
-                    finding,
-                ))
+                self.conditions_total_by_source[seed_src] += 1
+                if condition.state in {"satisfied", "failed"}:
+                    self.conditions_decided_by_source[seed_src] += 1
+                scored.append(
+                    (
+                        _score_condition(condition),
+                        condition,
+                        finding_file,
+                        finding,
+                    )
+                )
             all_data.append((finding_file, finding, conditions))
 
         self.breadth_examined = len(scored)
