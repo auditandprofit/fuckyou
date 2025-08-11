@@ -54,6 +54,15 @@ def save_cache(key: str, response: Any) -> None:
     path = Path(memo_dir) / f"{key}.json"
     path.write_text(json.dumps(data))
 
+    # Maintain a lockfile mapping keys to cached files for deterministic replay.
+    lock_path = Path(memo_dir) / "lock.json"
+    try:
+        lock = json.loads(lock_path.read_text())
+    except Exception:
+        lock = {}
+    lock[key] = f"{key}.json"
+    lock_path.write_text(json.dumps(lock, indent=2))
+
 
 def openai_configure_api(api_key: Optional[str] = None):
     """Retrieve key, build global client, log success."""

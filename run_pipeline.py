@@ -34,7 +34,8 @@ def write_run_json(run_path: Path, data: dict) -> None:
 def parse_args(argv: list[str] | None = None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--manifest", default="manifest.txt")
-    ap.add_argument("--findings-dir", default="findings")
+    ap.add_argument("--findings-dir", default=None)
+    ap.add_argument("--allow-in-repo-artifacts", action="store_true")
     ap.add_argument("--version", default=VERSION)
     ap.add_argument("--repo-root", default=str(paths.REPO_ROOT))
     ap.add_argument("--model", default=openai.DEFAULT_MODEL)
@@ -76,7 +77,14 @@ def main(argv: list[str] | None = None) -> None:
     git_short = get_git_short()
     run_ts = utc_timestamp()
     run_id = f"{run_ts}_{git_short}"
-    findings_root = Path(args.findings_dir)
+
+    if args.findings_dir is None:
+        findings_root = (repo_root.parent / ".anchor_runs").resolve()
+    else:
+        findings_root = Path(args.findings_dir).resolve()
+    if repo_root in findings_root.parents or findings_root == repo_root:
+        if not args.allow_in_repo_artifacts:
+            raise SystemExit("findings dir is inside repo; pass --allow-in-repo-artifacts to override")
     run_path = findings_root / f"run_{run_id}"
     while run_path.exists():
         time.sleep(1)
@@ -95,6 +103,7 @@ def main(argv: list[str] | None = None) -> None:
         }
 
     run_path.mkdir(parents=True, exist_ok=False)
+    os.environ.setdefault("LLM_MEMO_DIR", str(run_path / "llm_cache"))
 
     logger = logging.getLogger("orchestrator")
     logger.setLevel(logging.INFO)
