@@ -49,12 +49,14 @@ class CodexClient:
         backoff_base: float = 2.0,
         semaphore: Optional[threading.Semaphore] = None,
         default_env: Optional[Mapping[str, str]] = None,
+        forward_streams: bool = True,
     ) -> None:
         self.bin_path = bin_path or self._find_codex_bin()
         self.retries = retries
         self.backoff_base = backoff_base
         self.semaphore = semaphore
         self.default_env = dict(default_env or {})
+        self.forward_streams = forward_streams
 
     def _find_codex_bin(self) -> str:
         path = shutil.which("codex")
@@ -119,11 +121,15 @@ class CodexClient:
 
                     assert proc.stdout is not None
                     assert proc.stderr is not None
+                    import io
+
+                    out_dst = sys.stdout if self.forward_streams else io.StringIO()
+                    err_dst = sys.stderr if self.forward_streams else io.StringIO()
                     th_out = threading.Thread(
-                        target=_forward, args=(proc.stdout, sys.stdout, stdout_buf)
+                        target=_forward, args=(proc.stdout, out_dst, stdout_buf)
                     )
                     th_err = threading.Thread(
-                        target=_forward, args=(proc.stderr, sys.stderr, stderr_buf)
+                        target=_forward, args=(proc.stderr, err_dst, stderr_buf)
                     )
                     th_out.start()
                     th_err.start()

@@ -37,3 +37,9 @@ LLM call fails after internal retries, the run aborts and reports the error.
    - Persist updated finding artifacts, including condition states and evidence trails, back into `findings/`.
    - Only production-grade objects and files are produced; no extraneous or decorative content is saved.
 
+## Live Mode
+
+To stream high-signal progress during a run, pass `--live` to `run_pipeline.py`
+or set the environment variable `ANCHOR_LIVE=1`. Optional `--live-format=json`
+emits JSON lines instead of text.
+

@@ -55,7 +55,7 @@ def clean_env(tmp_path, monkeypatch):
         shutil.rmtree(findings)
 
 
-def run_pipeline(monkeypatch, llm_stub=None) -> SimpleNamespace:
+def run_pipeline(monkeypatch, llm_stub=None, args=None) -> SimpleNamespace:
     import run_pipeline as rp
 
     if llm_stub is None:
@@ -71,7 +71,7 @@ def run_pipeline(monkeypatch, llm_stub=None) -> SimpleNamespace:
 
     monkeypatch.setattr("orchestrator.openai_generate_response", llm_stub)
     try:
-        rp.main()
+        rp.main(args or [])
         return SimpleNamespace(returncode=0, stdout="", stderr="")
     except SystemExit as exc:
         return SimpleNamespace(returncode=exc.code, stdout="", stderr="")
