@@ -1,0 +1,15 @@
+Here are the big buckets:
+
+* **How the pieces talk**: the step-by-step flow and handoffs between stages.
+* **Running code safely**: how the agent executes checks, sandboxing, no-network, read-only.
+* **Talking to the LLM**: prompts, tool schemas, retries, model/version pinning, caching.
+* **Proof of findings**: what evidence you store (file, lines, hash, snippet) and how you keep it stable.
+* **Repeatable runs**: locking configs, recording git state, making results reproducible.
+* **Failure handling**: timeouts, backoff, graceful errors, recovery paths.
+* **Speed and cost**: concurrency, batching, de-duping work, token/time budgets.
+* **Visibility**: logs, live progress, metrics, and a clean final report.
+* **Data shapes & checks**: strict JSON/Pydantic models everywhere; consistent event names.
+* **Security boundaries**: trusted binaries, path validation, secret handling.
+* **Config & release**: flags/env, CI/CD, versioning, reproducible builds.
+* **Testing & evals**: unit/integration tests, golden runs, regression gates, small accuracy suite.
+
