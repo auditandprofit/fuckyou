@@ -215,7 +215,8 @@ def main(argv: list[str] | None = None) -> None:
             seed_src = f.get("seed_source", "manual")
             abs_path = repo_root / rel_path
             file_bytes = abs_path.read_bytes()
-            finding_id = hashlib.sha1(rel_path.as_posix().encode()).hexdigest()[:12]
+            raw_id = f"{rel_path.as_posix()}|{f['claim']}|{seed_src}"
+            finding_id = hashlib.sha1(raw_id.encode()).hexdigest()[:12]
             finding = {
                 "finding_id": finding_id,
                 "schema_version": 1,
@@ -230,6 +231,8 @@ def main(argv: list[str] | None = None) -> None:
                     "input_hash": hashlib.sha1(file_bytes).hexdigest(),
                     "file_size": len(file_bytes),
                     "path": rel_path.as_posix(),
+                    "claim": f["claim"],
+                    "seed_source": seed_src,
                 },
                 "status": "seeded",
                 "conditions": [],

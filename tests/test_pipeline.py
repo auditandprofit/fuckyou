@@ -191,6 +191,32 @@ def test_seeded_findings_have_claim_and_evidence(monkeypatch):
         assert "verdict" in data
 
 
+def test_finding_id_uniqueness(monkeypatch):
+    manifest = Path("manifest.txt")
+    manifest.write_text("examples/example1.py")
+
+    def fake_gather(self, files, source_map):
+        path = files[0]
+        return [
+            {"claim": "first", "files": [path.as_posix()], "evidence": {}, "seed_source": "manual"},
+            {"claim": "second", "files": [path.as_posix()], "evidence": {}, "seed_source": "manual"},
+        ]
+
+    monkeypatch.setattr(
+        "orchestrator.Orchestrator.gather_initial_findings", fake_gather
+    )
+
+    res = run_pipeline(monkeypatch)
+    assert res.returncode == 0
+    run_dir = get_run_dirs()[0]
+    finding_files = sorted(run_dir.glob("finding_*.json"))
+    assert len(finding_files) == 2
+    ids = {fp.name for fp in finding_files}
+    assert len(ids) == 2
+    claims = {json.loads(fp.read_text())["claim"] for fp in finding_files}
+    assert claims == {"first", "second"}
+
+
 def test_manifest_is_single_source(monkeypatch):
     import run_pipeline as rp
 
@@ -208,6 +234,7 @@ def test_manifest_is_single_source(monkeypatch):
 
     monkeypatch.setattr(rp, "validate_manifest", fake_validate)
     monkeypatch.setattr("orchestrator.Orchestrator.gather_initial_findings", fake_gather)
+    monkeypatch.setattr("run_pipeline.git_changed_files", lambda *a, **k: [])
 
     monkeypatch.setattr(
         "orchestrator.openai_generate_response",
@@ -233,7 +260,12 @@ def test_pipeline_aborts_on_llm_failure(monkeypatch):
     def boom(*a, **k):
         raise RuntimeError("no llm")
 
-    res = run_pipeline(monkeypatch, llm_stub=boom)
+    res = run_pipeline(
+        monkeypatch,
+        llm_stub=boom,
+        args=["--findings-dir", "findings", "--allow-in-repo-artifacts"],
+        include_defaults=False,
+    )
     assert res.returncode != 0
 
     run_dir = get_run_dirs()[0]
