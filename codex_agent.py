@@ -50,7 +50,7 @@ class CodexAgent:
                 f"{BANNER}\nSTAGE: discover\n\n"
                 "USER:\n"
                 f"Action: DISCOVER\nPath: {path}\n\n"
-                "Purpose:\n- Ground the claim in specific repo text.\n- Cite ≤3 concrete regions.\n- Formulate a concrete, falsifiable security bug claim.\n- Return minimal related files + seed evidence.\n\n"
+                "Purpose:\n- Ground the claim in specific repo text.\n- Cite ≤3 concrete regions.\n- Formulate a concrete, falsifiable security bug claim.\n- Return 1–3 evidence.highlights (required).\n\n"
                 "Claim requirements:\n- One sentence, falsifiable.\n- Include a brief attacker/trust-boundary clause (≤ 12 words).\n- No speculation.\n\n"
                 "Output JSON:\n{\"schema_version\":1,\n \"stage\":\"discover\",\n \"claim\":\"<security bug claim>\",\n \"files\": [\"<repo-rel path>\", ...],\n \"evidence\":{\"highlights\": [\n    {\"path\":\"<repo-rel>\",\"region\":{\"start_line\":<int>,\"end_line\":<int>},\"why\":\"<security-relevant reason>\"}\n ]}}\n"
             )
@@ -64,10 +64,12 @@ class CodexAgent:
                 "Policies:\n"
                 "- No network. No file modifications. Read-only analysis only.\n"
                 "- Do not spawn external processes.\n"
+                "- You may read any file under the repository root and search across the tree.\n"
+                "- If summary is not \"error:...\", include ≥1 entry in \"citations\" with exact \"path\", \"start_line\", and \"end_line\" that support your claim.\n"
                 "- If an action would violate policy or cannot be performed, return \n"
                 "  {\"schema_version\":1,\"stage\":\"exec\",\"summary\":\"error: <reason>\",\"citations\":[],\"notes\":\"\"}\n\n"
                 "Output STRICT JSON:\n"
-                "{\"schema_version\":1,\"stage\":\"exec\",\"summary\":\"<short or 'error: ...'>\","
+                "{\"schema_version\":1,\"stage\":\"exec\",\"summary\":\"<short or 'error: ...'>\"," 
                 " \"citations\":[{\"path\":\"<repo-rel>\",\"start_line\":<int>,\"end_line\":<int>,\"sha1\":\"<hex, optional>\"}],"
                 " \"notes\":\"<optional>\"}\n"
                 "If execution fails, still follow the schema with summary starting 'error:' and empty citations.\n"
@@ -98,6 +100,8 @@ class CodexAgent:
                     and (c.get("sha1") is None or isinstance(c.get("sha1"), str))
                 ):
                     raise ValueError("invalid citation object")
+            if not data["summary"].startswith("error:") and not data["citations"]:
+                data["summary"] = "error: missing-citation"
             return data
         if kind == "discover":
             if not (
@@ -106,6 +110,11 @@ class CodexAgent:
                 and data.get("stage") == "discover"
             ):
                 raise ValueError("invalid discover result")
+            highlights = (((data or {}).get("evidence") or {}).get("highlights") or [])
+            if len(highlights) == 0:
+                raise ValueError("discover: missing evidence.highlights (require 1–3)")
+            if len(highlights) > 3:
+                data["evidence"]["highlights"] = highlights[:3]
             return data
         raise ValueError("unsupported kind")
 

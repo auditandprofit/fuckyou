@@ -42,19 +42,35 @@ def test_discover():
         "stage": "discover",
         "claim": "c",
         "files": ["p"],
-        "evidence": {},
+        "evidence": {
+            "highlights": [
+                {"path": "p", "region": {"start_line": 1, "end_line": 1}, "why": "w"}
+            ]
+        },
     }
     agent = _agent_with_result(data)
     res = agent.run("codex:discover:p")
     assert res == data
 
-
-def test_exec():
+def test_exec_requires_citation():
     data = {
         "schema_version": 1,
         "stage": "exec",
         "summary": "ok",
         "citations": [],
+        "notes": "",
+    }
+    agent = _agent_with_result(data)
+    res = agent.run("codex:exec:p::stat:p")
+    assert res["summary"] == "error: missing-citation"
+
+
+def test_exec_with_citation():
+    data = {
+        "schema_version": 1,
+        "stage": "exec",
+        "summary": "ok",
+        "citations": [{"path": "p", "start_line": 1, "end_line": 1}],
         "notes": "",
     }
     agent = _agent_with_result(data)

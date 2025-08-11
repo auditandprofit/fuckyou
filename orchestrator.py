@@ -145,9 +145,7 @@ class Orchestrator:
                     "You are a security-auditing assistant. Your sole objective is to "
                     "ADJUDICATE a specific bug claim as TRUE POSITIVE or FALSE POSITIVE "
                     "with defensible, testable evidence. Maintain determinism "
-                    "(temperature=0). Output STRICT JSON only—no markdown/prose. Use only "
-                    "repository-local information and permitted executions. No network. "
-                    "No file writes.\n\nDefinitions:\n- TRUE POSITIVE: Evidence demonstrates the claim holds under realistic "
+                    "(temperature=0). Use only repository-local information and permitted executions.\n\nDefinitions:\n- TRUE POSITIVE: Evidence demonstrates the claim holds under realistic "
                     "conditions within the codebase.\n- FALSE POSITIVE: Evidence demonstrates the claim does not hold, is unreachable, "
                     "or is otherwise invalid.\n- UNKNOWN: Evidence gathered so far is insufficient; propose targeted sub-checks.\n\n"
                     "Evidence must be concrete, minimally sufficient, and reproducible."
@@ -247,8 +245,7 @@ class Orchestrator:
                     "You are a security-auditing assistant. Your sole objective is to "
                     "ADJUDICATE a specific bug claim as TRUE POSITIVE or FALSE POSITIVE "
                     "with defensible, testable evidence. Maintain determinism (temperature=0). "
-                    "Output STRICT JSON only—no markdown/prose. Use only repository-local "
-                    "information and permitted executions. No network. No file writes."
+                    "Use only repository-local information and permitted executions."
                 ),
             },
             {
@@ -263,6 +260,8 @@ class Orchestrator:
                     "- If the last observation summary starts with 'error:', switch to a different operation class.\n"
                     "- Final task must directly test the condition's ACCEPT vs REJECT.\n"
                     "- Each task is a single clear action to perform in the repository (no pseudo-DSL).\n"
+                    "- Begin each task with a verb from {search, read-file, ast-parse, callgraph, dataflow} (hint only; executor accepts natural language).\n"
+                    "- The final task MUST state the exact evidence to return (e.g., function name + line range proving ACCEPT or REJECT).\n"
                     "- Use plain English; do not mention internal mode names.\n"
                     "- You may traverse the entire repo; include explicit paths when known.\n"
                     "- No external network/tools.\n"
@@ -382,6 +381,7 @@ class Orchestrator:
                 "role": "system",
                 "content": (
                     f"{BANNER}\nSTAGE: judge\n\nPrefer the latest successful observation; if it conflicts with any earlier success, return failed and explain. If unknown, state the single decisive evidence needed. evidence_refs index the provided citations (0-based)."
+                    "\n- If code claims lack usable citations, return \"unknown\" and specify the single missing citation (path + line range) needed."
                 ),
             },
             {
@@ -443,8 +443,7 @@ class Orchestrator:
                     "You are a security-auditing assistant. Your sole objective is to "
                     "ADJUDICATE a specific bug claim as TRUE POSITIVE or FALSE POSITIVE "
                     "with defensible, testable evidence. Maintain determinism (temperature=0). "
-                    "Output STRICT JSON only—no markdown/prose. Use only repository-local "
-                    "information and permitted executions. No network. No file writes."
+                    "Use only repository-local information and permitted executions."
                 ),
             },
             {
@@ -545,7 +544,7 @@ class Orchestrator:
             goal_hash = hashlib.sha1(goal.encode()).hexdigest()
             try:
                 out = self.agent(goal)
-                condition.evidence.append(json.dumps(out)[:10000])
+                condition.evidence.append(json.dumps(out))
                 task_results.append(
                     {
                         "task": goal,
