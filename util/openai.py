@@ -99,19 +99,38 @@ def openai_generate_response(
 
     tools: List[Dict[str, Any]] = []
     if functions:
-        # Responses API shape: each tool is {"type":"function","function":{name,description,parameters}}
-        tools = [{"type": "function", "function": f} for f in functions]
+        # Responses API flat tool schema: {"type":"function","name":...,"description":...,"parameters":...}
+        tools = [
+            {
+                "type": "function",
+                "name": f["name"],
+                "description": f.get("description", ""),
+                "parameters": f.get(
+                    "parameters", {"type": "object", "properties": {}}
+                ),
+            }
+            for f in functions
+        ]
 
     # Prefer Responses API. If callers passed Chat-style `messages`, we still put them in `input`.
     params: Dict[str, Any] = {
         "model": model,
         "input": messages,  # Responses accepts free-form input; we pass chat-style for continuity.
-        "tools": tools or None,
         "reasoning": {"effort": reasoning_effort},
         "service_tier": service_tier,
         "temperature": temperature,
         **extra,
     }
+
+    if tools:
+        params["tools"] = tools
+        if isinstance(function_call, dict) and function_call.get("name"):
+            params["tool_choice"] = {
+                "type": "function",
+                "name": function_call["name"],
+            }
+        elif function_call in (None, "auto"):
+            params["tool_choice"] = "auto"
 
     logging.info("Sending:\n%s", messages)
     response = client.responses.create(**params)
