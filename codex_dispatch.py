@@ -7,8 +7,10 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Mapping, Optional, Sequence
 import threading
+import tempfile
 
 
 class CodexNotFound(FileNotFoundError):
@@ -70,10 +72,16 @@ class CodexClient:
     ) -> CodexExecResult:
         """Execute codex with the given prompt and return the result."""
 
+        out_file = Path(tempfile.mkstemp(prefix="codex_last_")[1])
         cmd = [
             self.bin_path,
-            "--skip-git-repo-check",
+            "exec",
+            "--output-last-message",
+            str(out_file),
             "--dangerously-bypass-approvals-and-sandbox",
+            "--skip-git-repo-check",
+            "-C",
+            workdir,
             *(extra_flags or []),
         ]
         env = os.environ.copy()
@@ -96,7 +104,6 @@ class CodexClient:
                         stdin=subprocess.PIPE,
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
-                        cwd=workdir,
                         env=env,
                         text=True,
                     )
@@ -150,8 +157,17 @@ class CodexClient:
                     time.sleep(self.backoff_base ** attempt)
                     continue
             duration = time.time() - start
+            try:
+                last_msg = out_file.read_text()
+            except Exception:
+                last_msg = ""
+            finally:
+                try:
+                    out_file.unlink()
+                except OSError:
+                    pass
             result = CodexExecResult(
-                stdout="".join(stdout_buf),
+                stdout=last_msg,
                 stderr="".join(stderr_buf),
                 returncode=proc.returncode,
                 duration_sec=duration,
