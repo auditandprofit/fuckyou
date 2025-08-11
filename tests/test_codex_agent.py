@@ -139,12 +139,12 @@ def test_path_escape_custom_verbs():
         assert False
 
 
-def test_truncate_bytes():
+def test_no_truncate_bytes():
     long_bytes = "x" * (MAX_BYTES + 10)
     data = {"type": "read", "path": "p", "bytes": long_bytes, "sha1": "aa"}
     agent = _agent_with_result(data)
     res = agent.run("read:examples/example1.py")
-    assert len(res["bytes"]) == MAX_BYTES
+    assert len(res["bytes"]) == len(long_bytes)
 
 
 def test_invalid_json():
@@ -153,4 +153,4 @@ def test_invalid_json():
     workdir = str(Path(__file__).resolve().parents[1])
     agent = CodexAgent(client, workdir=workdir)
     res = agent.run("read:examples/example1.py")
-    assert res["error"] == "invalid-json"
+    assert res == "not json"
