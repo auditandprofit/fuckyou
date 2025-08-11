@@ -183,7 +183,7 @@ def test_manifest_is_single_source(monkeypatch):
         called["validate"] = True
         return [Path("examples/example1.py")]
 
-    def fake_gather(self, files, prefix):
+    def fake_gather(self, files):
         called["gather"] = files
         return []
 

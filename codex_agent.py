@@ -80,7 +80,9 @@ class CodexAgent:
                 f"{BANNER}\nSTAGE: exec\n\n"
                 "USER:\n"
                 f"Repository path: {path}\nGoal: {payload}\n\n"
-                "Output STRICT JSON: {\"type\":\"exec_observation\",\"summary\":\"<short>\",\"citations\":[],\"notes\":\"<optional>\"}\n"
+                "Output STRICT JSON:\n"
+                "{\"type\":\"exec_observation\",\"summary\":\"<short or 'error: ...'>\",\"citations\":[{\"path\":\"<repo-rel>\",\"start\":<int>,\"end\":<int>,\"sha1\":\"<hex>\"}],\"notes\":\"<optional>\"}\n"
+                "If execution fails, still follow the schema with summary starting 'error:' and empty citations.\n"
             )
         action = {
             "read": "READ",
@@ -125,6 +127,15 @@ class CodexAgent:
                 and isinstance(data.get("citations"), list)
             ):
                 raise ValueError("invalid exec observation")
+            for c in data.get("citations", []):
+                if not (
+                    isinstance(c, dict)
+                    and isinstance(c.get("path"), str)
+                    and isinstance(c.get("start"), int)
+                    and isinstance(c.get("end"), int)
+                    and isinstance(c.get("sha1"), str)
+                ):
+                    raise ValueError("invalid citation object")
             return data
         if not (isinstance(data, dict) and data.get("type")):
             raise ValueError("invalid response")
@@ -150,14 +161,37 @@ class CodexAgent:
                 extra_flags=self.default_flags,
                 timeout=self.timeout,
             )
+            return self._postprocess(kind, path, res)
         except CodexTimeout:
+            if kind == "exec":
+                return {
+                    "type": "exec_observation",
+                    "summary": "error: timeout",
+                    "citations": [],
+                    "notes": "",
+                }
             return {"error": "timeout", "goal": task}
         except CodexError as exc:
+            if kind == "exec":
+                return {
+                    "type": "exec_observation",
+                    "summary": f"error: codex-exit {exc.result.returncode}",
+                    "citations": [],
+                    "notes": exc.result.stderr[:512],
+                }
             return {
                 "error": "codex-exit",
                 "goal": task,
                 "code": exc.result.returncode,
                 "stderr_head": exc.result.stderr[:512],
             }
-        return self._postprocess(kind, path, res)
+        except Exception as exc:
+            if kind == "exec":
+                return {
+                    "type": "exec_observation",
+                    "summary": f"error: {exc}",
+                    "citations": [],
+                    "notes": "",
+                }
+            raise
 
