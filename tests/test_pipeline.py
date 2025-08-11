@@ -5,6 +5,8 @@ import shutil
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
+from io import StringIO
+import contextlib
 
 import pytest
 
@@ -70,11 +72,15 @@ def run_pipeline(monkeypatch, llm_stub=None, args=None) -> SimpleNamespace:
         }
 
     monkeypatch.setattr("orchestrator.openai_generate_response", llm_stub)
-    try:
-        rp.main(args or [])
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
-    except SystemExit as exc:
-        return SimpleNamespace(returncode=exc.code, stdout="", stderr="")
+    out = StringIO()
+    err = StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        try:
+            rp.main(args or [])
+            code = 0
+        except SystemExit as exc:
+            code = exc.code
+    return SimpleNamespace(returncode=code, stdout=out.getvalue(), stderr=err.getvalue())
 
 
 def get_run_dirs():

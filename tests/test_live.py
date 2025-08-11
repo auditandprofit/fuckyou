@@ -7,3 +7,4 @@ def test_run_pipeline_live(monkeypatch, clean_env):
     manifest.write_text("examples/example1.py")
     res = run_pipeline(monkeypatch, args=["--live"])
     assert res.returncode == 0
+    assert "RUN" in res.stdout
