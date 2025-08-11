@@ -41,14 +41,13 @@ def test_generate_tasks_only_exec(monkeypatch):
         "orchestrator.openai_generate_response", lambda *a, **k: fake
     )
     tasks = orch.generate_tasks(cond, Path("p.py"))
-    assert tasks == [
-        {
-            "task": "codex:exec:p.py::t2",
-            "why": "w2",
-            "mode": "exec",
-            "original": "t2",
-        }
-    ]
+    assert tasks[0] == {
+        "task": "codex:exec:p.py::t2",
+        "why": "w2",
+        "mode": "exec",
+        "original": "t2",
+    }
+    assert tasks[1]["original"] == "callgraph shortest-path"
 
 
 def test_judge_condition_requires_evidence(monkeypatch):

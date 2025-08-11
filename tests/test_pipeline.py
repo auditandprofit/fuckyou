@@ -48,6 +48,7 @@ def clean_env(tmp_path, monkeypatch):
     )
     codex.chmod(0o755)
     monkeypatch.setenv("PATH", f"{codex_dir}:{os.environ['PATH']}")
+    monkeypatch.setenv("ANCHOR_HOTSPOTS", "0")
     yield
     manifest.write_text(original)
     if findings.exists():

@@ -19,6 +19,7 @@ from util.time import utc_now_iso, utc_timestamp
 from util import paths
 from util.io import atomic_write
 from util.manifest import validate_manifest
+from util.hotspots import find as find_hotspots
 import util.openai as openai
 
 VERSION = "0.1"
@@ -115,6 +116,9 @@ def main(argv: list[str] | None = None) -> None:
     logger.info("Validating manifest")
     try:
         manifest_files = validate_manifest(manifest_path)
+        if os.getenv("ANCHOR_HOTSPOTS", "1") not in {"0", "false", "False"}:
+            hot = [paths.repo_rel(p) for p in find_hotspots(repo_root)]
+            manifest_files = sorted(set(manifest_files + hot), key=lambda p: p.as_posix())
     except Exception as exc:
         logger.error("Manifest error: %s", exc)
         fh.close()
