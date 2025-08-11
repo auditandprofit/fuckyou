@@ -3,7 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import List
 
-from util.paths import repo_rel, REPO_ROOT
+from util.paths import repo_rel
+import util.paths as upaths
 
 
 def validate_manifest(manifest_path: Path) -> List[Path]:
@@ -16,7 +17,7 @@ def validate_manifest(manifest_path: Path) -> List[Path]:
             if not entry:
                 continue
             rel = repo_rel(Path(entry))
-            abs_path = REPO_ROOT / rel
+            abs_path = upaths.REPO_ROOT / rel
             if not abs_path.exists():
                 raise FileNotFoundError(f"Missing manifest file: {entry}")
             rel_str = rel.as_posix()
