@@ -1,11 +1,26 @@
+from __future__ import annotations
+
 import ast
+import os
 import re
 from functools import lru_cache
 from pathlib import Path
+from typing import Iterable, List, Set, Tuple
+
 from util import paths
 
-# Mapping of module names to risk lenses
-MODULE_LENS_MAP = {
+# Regex-based mapping of dependency names to risk lenses
+DEP_LENS_MAP: dict[str, str] = {
+    "requests": "ssrf",
+    "httpx": "ssrf",
+    "jinja2": "template",
+    "PyJWT|jwt": "crypto",
+    "cryptography": "crypto",
+    "xml.*|defusedxml": "xxe",
+    "lxml": "xxe",
+    "paramiko": "ssh",
+    "psycopg2|mysql|sqlite3": "sql",
+    "boto3": "cloud-iam",
     "pickle": "deser",
     "yaml": "deser",
     "toml": "deser",
@@ -18,11 +33,31 @@ MODULE_LENS_MAP = {
     "flask": "authz",
     "fastapi": "authz",
     "django": "authz",
-    "jinja2": "authz",
 }
 
+_DEP_LENS_RE = [(re.compile(k, re.IGNORECASE), v) for k, v in DEP_LENS_MAP.items()]
+
 # Risk ranking: lower index => higher priority
-LENS_ORDER = ["exec", "path", "deser", "authz"]
+LENS_ORDER = [
+    "ssrf",
+    "template",
+    "crypto",
+    "xxe",
+    "sql",
+    "cloud-iam",
+    "exec",
+    "path",
+    "deser",
+    "authz",
+    "ssh",
+]
+
+
+def _lens_for_module(name: str) -> str | None:
+    for pat, lens in _DEP_LENS_RE:
+        if pat.fullmatch(name):
+            return lens
+    return None
 
 
 def _walk_imports(code: str) -> set[str]:
@@ -80,22 +115,56 @@ def scan_imports(path: Path) -> set[str]:
     return _walk_imports(code)
 
 
-def variants_for(path: Path) -> list[str]:
-    """Return up to two risk lenses for ``path`` based on imports/deps."""
-    root = paths.REPO_ROOT
-    modules = scan_imports(path)
+@lru_cache(None)
+def dep_lenses(root: Path) -> set[str]:
+    """Infer lenses from repo-wide imports and dependencies."""
+
+    modules = set()
     modules |= _deps_from_requirements(root)
-    lenses = []
+    for py in root.rglob("*.py"):
+        try:
+            modules |= _walk_imports(py.read_text())
+        except Exception:
+            continue
+    lenses: set[str] = set()
     for m in modules:
-        lens = MODULE_LENS_MAP.get(m)
+        lens = _lens_for_module(m)
         if lens:
-            lenses.append(lens)
-    seen = set()
-    ordered = []
+            lenses.add(lens)
+    return lenses
+
+
+def variants_for(path: Path) -> List[Tuple[str, str]]:
+    """Return ``(lens, source)`` tuples for up to two lenses for ``path``."""
+
+    root = paths.REPO_ROOT
+    local_modules = scan_imports(path)
+    local_lenses = {l for m in local_modules if (l := _lens_for_module(m))}
+    lenses: List[Tuple[str, str]] = []
+
+    if os.getenv("ANCHOR_DEP_RULES", "1") not in {"0", "false", "False"}:
+        global_lenses = dep_lenses(root)
+    else:
+        global_lenses = set()
+
+    # first take local lenses
+    for lens in local_lenses:
+        lenses.append((lens, "module"))
+
+    # supplement with global lenses until we have 2
     for lens in LENS_ORDER:
-        if lens in lenses and lens not in seen:
-            ordered.append(lens)
-            seen.add(lens)
-        if len(ordered) == 2:
+        if len(lenses) >= 2:
             break
+        if lens in global_lenses and lens not in {l for l, _ in lenses}:
+            lenses.append((lens, "dep"))
+
+    # order by LENS_ORDER
+    ordered: List[Tuple[str, str]] = []
+    for l in LENS_ORDER:
+        for lens, src in lenses:
+            if lens == l and (lens, src) not in ordered:
+                ordered.append((lens, src))
+                if len(ordered) == 2:
+                    return ordered
     return ordered
+
