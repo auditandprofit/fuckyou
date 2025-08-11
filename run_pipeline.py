@@ -13,6 +13,7 @@ import time
 from codex_dispatch import CodexClient
 from codex_agent import CodexAgent
 from orchestrator import Orchestrator
+from util.reporter import Reporter
 from util.git import get_git_short, is_dirty
 from util.time import utc_now_iso, utc_timestamp
 from util import paths
@@ -38,11 +39,15 @@ def parse_args(argv: list[str] | None = None):
     ap.add_argument("--model", default=openai.DEFAULT_MODEL)
     ap.add_argument("--reasoning-effort", default=openai.DEFAULT_REASONING_EFFORT)
     ap.add_argument("--service-tier", default=openai.DEFAULT_SERVICE_TIER)
+    ap.add_argument("--live", action="store_true")
+    ap.add_argument("--live-format", choices=["text", "json"], default="text")
     return ap.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args([] if argv is None else argv)
+
+    reporter = Reporter.from_env(enabled=args.live, fmt=args.live_format)
 
     repo_root = Path(args.repo_root).resolve()
     os.chdir(repo_root)
@@ -94,6 +99,9 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit(1)
     logger.info("Manifest validated: %d files", len(manifest_files))
     logger.info("Run directory: %s", run_path)
+    reporter.log(
+        "run:start", run_id=run_id, model=args.model, manifest=len(manifest_files)
+    )
 
     start_time = time.time()
     run_data = {
@@ -117,9 +125,9 @@ def main(argv: list[str] | None = None) -> None:
     counts = run_data["counts"]
     counts["manifest_files"] = len(manifest_files)
 
-    codex = CodexClient()
+    codex = CodexClient(forward_streams=not reporter.enabled)
     codex_agent = CodexAgent(codex, workdir=str(repo_root))
-    orch = Orchestrator(codex_agent.run)
+    orch = Orchestrator(codex_agent.run, reporter=reporter)
 
     try:
         initial = orch.gather_initial_findings(manifest_files, args.prompt_prefix)
@@ -181,6 +189,12 @@ def main(argv: list[str] | None = None) -> None:
         counts["findings_written"],
         counts["errors"],
         duration,
+    )
+    reporter.log(
+        "run:end",
+        findings=counts["findings_written"],
+        errors=counts["errors"],
+        duration=f"{duration:.2f}s",
     )
 
 

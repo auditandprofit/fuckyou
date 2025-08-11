@@ -64,10 +64,11 @@ class Orchestrator:
 
     VERSION = "0.2"
 
-    def __init__(self, agent: Callable[[str], str]):
+    def __init__(self, agent: Callable[[str], str], *, reporter=None):
         self.agent = agent
         self.logger = logging.getLogger(__name__)
         self.max_retries = int(os.getenv("ANCHOR_OPENAI_RETRIES", "3"))
+        self.reporter = reporter
 
     def _with_retries(self, func: Callable, *args, **kwargs):
         last_exc = None
@@ -169,6 +170,8 @@ class Orchestrator:
             }
         ]
         self.logger.info("LLM derive_conditions for claim: %s", claim)
+        if self.reporter:
+            self.reporter.log("condition:request", claim=claim)
         response = self._with_retries(
             openai_generate_response,
             messages=messages,
@@ -187,6 +190,12 @@ class Orchestrator:
                     reject=d.get("reject", ""),
                     suggested_tasks=d.get("suggested_tasks", []),
                 )
+            )
+        if self.reporter:
+            self.reporter.log(
+                "condition:derived",
+                count=len(conds),
+                conditions=[c.description for c in conds],
             )
         return conds
 
@@ -258,6 +267,8 @@ class Orchestrator:
         self.logger.info(
             "LLM generate_tasks for condition: %s", condition.description
         )
+        if self.reporter:
+            self.reporter.log("tasks:request", condition=condition.description)
         response = self._with_retries(
             openai_generate_response,
             messages=messages,
@@ -275,6 +286,10 @@ class Orchestrator:
                     "original": t.get("task", ""),
                 }
             )
+        if self.reporter:
+            self.reporter.log(
+                "tasks:plan", tasks=[t.get("task", "") for t in tasks]
+            )
         return tasks
 
     def judge_condition(self, condition: Condition) -> str:
@@ -289,14 +304,27 @@ class Orchestrator:
         typ = data.get("type")
         if typ == "exec":
             typ = data.get("result", {}).get("type")
+        shortcut = False
         if typ == "stat":
             condition.rationale = "stat task succeeded"
             condition.evidence_refs = [len(condition.evidence) - 1]
-            return "satisfied"
+            shortcut = True
+            state = "satisfied"
+            if self.reporter:
+                self.reporter.log(
+                    "judge", state=state, rationale=condition.rationale, shortcut=True
+                )
+            return state
         if typ == "py:functions":
             condition.rationale = "python parse succeeded"
             condition.evidence_refs = [len(condition.evidence) - 1]
-            return "satisfied"
+            shortcut = True
+            state = "satisfied"
+            if self.reporter:
+                self.reporter.log(
+                    "judge", state=state, rationale=condition.rationale, shortcut=True
+                )
+            return state
         messages = [
             {
                 "role": "system",
@@ -350,7 +378,13 @@ class Orchestrator:
         _, data = openai_parse_function_call(response)
         condition.rationale = data.get("rationale", "")
         condition.evidence_refs = data.get("evidence_refs", [])
-        return data.get("state", "unknown")
+        state = data.get("state", "unknown")
+        if self.reporter:
+            payload = {"state": state, "rationale": condition.rationale}
+            if shortcut:
+                payload["shortcut"] = True
+            self.reporter.log("judge", **payload)
+        return state
 
     # -- Sub-condition narrowing -------------------------------------------
     def _narrow_subconditions(self, condition: Condition) -> List[Condition]:
@@ -414,6 +448,8 @@ class Orchestrator:
         self.logger.info(
             "LLM narrow_subconditions for condition: %s", condition.description
         )
+        if self.reporter:
+            self.reporter.log("subconditions:request", condition=condition.description)
         response = self._with_retries(
             openai_generate_response,
             messages=messages,
@@ -434,6 +470,12 @@ class Orchestrator:
                 )
             )
         condition.subconditions.extend(subs)
+        if self.reporter:
+            self.reporter.log(
+                "subconditions:derived",
+                count=len(subs),
+                conditions=[c.description for c in subs],
+            )
         return subs
 
     def _execute_tasks(self, finding_file: Path, condition: Condition, tasks: List[dict]) -> List[dict]:
@@ -473,6 +515,18 @@ class Orchestrator:
             {"condition": condition.description, "executed": task_results}
         )
         atomic_write(finding_file, json.dumps(finding, indent=2).encode())
+        if self.reporter:
+            types = []
+            for r in task_results:
+                out = r.get("output")
+                if isinstance(out, dict):
+                    typ = out.get("type")
+                    if typ == "exec":
+                        typ = f"exec→{out.get('result', {}).get('type', '')}"
+                    types.append(typ)
+                else:
+                    types.append("error")
+            self.reporter.log("tasks:result", types=types)
         return task_results
 
     def resolve_condition(
@@ -486,6 +540,8 @@ class Orchestrator:
             self.logger.info(
                 "Resolve step %d for condition '%s'", step + 1, condition.description
             )
+            if self.reporter:
+                self.reporter.log("resolve:step", n=step + 1)
             tasks = self.generate_tasks(condition, code_path)
             self.logger.info(
                 "Generated %d tasks for '%s'", len(tasks), condition.description
@@ -520,6 +576,10 @@ class Orchestrator:
             self.logger.info("Processing %s", finding_file.name)
             with open(finding_file) as fh:
                 finding = json.load(fh)
+            claim = finding.get("claim", "")
+            path = finding.get("provenance", {}).get("path", "")
+            if self.reporter:
+                self.reporter.log("finding:open", claim=claim, path=path)
             self.logger.info("Deriving conditions for %s", finding_file.name)
             conditions = self.derive_conditions(finding)
             self.logger.info(
@@ -533,3 +593,5 @@ class Orchestrator:
             finding["tasks_log"] = updated.get("tasks_log", [])
             finding["conditions"] = [c.to_dict() for c in conditions]
             atomic_write(finding_file, json.dumps(finding, indent=2).encode())
+            if self.reporter:
+                self.reporter.log("finding:complete")
