@@ -9,6 +9,7 @@ import json
 import logging
 import shutil
 import time
+import inspect
 
 from codex_dispatch import CodexClient
 from codex_agent import CodexAgent
@@ -50,7 +51,7 @@ def parse_args(argv: list[str] | None = None):
     ap.add_argument(
         "--git-window",
         type=int,
-        default=int(os.getenv("ANCHOR_GIT_WINDOW", "14")),
+        default=int(os.getenv("ANCHOR_GIT_WINDOW", "0")),
     )
     return ap.parse_args(argv)
 
@@ -139,7 +140,7 @@ def main(argv: list[str] | None = None) -> None:
             manifest_files.sort(
                 key=lambda p: hotspot_scores.get(p.as_posix(), 0), reverse=True
             )
-        changed_paths = git_changed_files(args.git_since, args.git_window)
+        changed_paths = git_changed_files(args.git_since, args.git_window or None)
         if changed_paths:
             changed = [paths.repo_rel(p) for p in changed_paths]
             for p in changed:
@@ -185,7 +186,11 @@ def main(argv: list[str] | None = None) -> None:
     orch = Orchestrator(codex_agent.run, reporter=reporter)
 
     try:
-        initial = orch.gather_initial_findings(manifest_files, seed_sources)
+        sig_len = len(inspect.signature(orch.gather_initial_findings).parameters)
+        if sig_len == 1:
+            initial = orch.gather_initial_findings(manifest_files)
+        else:
+            initial = orch.gather_initial_findings(manifest_files, seed_sources)
     except Exception as exc:  # pragma: no cover - unexpected
         logger.error("initial gathering failed: %s", exc)
         initial = []

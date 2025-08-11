@@ -74,7 +74,9 @@ class CodexClient:
     ) -> CodexExecResult:
         """Execute codex with the given prompt and return the result."""
 
-        out_file = Path(tempfile.mkstemp(prefix="codex_last_")[1])
+        fd, tmp_path = tempfile.mkstemp(prefix="codex_last_")
+        os.close(fd)
+        out_file = Path(tmp_path)
         cmd = [
             self.bin_path,
             "exec",

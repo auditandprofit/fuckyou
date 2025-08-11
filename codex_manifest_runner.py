@@ -11,7 +11,7 @@ def run_manifest(codex_bin: str, manifest_path: Path, out_dir: Path) -> None:
         out_file = out_dir / f"{digest}.txt"
         work_dir = Path(file_path).parent
         subprocess.run(
-            [codex_bin, "--output-last-message", str(out_file), "-C", str(work_dir)],
+            [codex_bin, "exec", "--output-last-message", str(out_file), "-C", str(work_dir)],
             input=b"",
             cwd=Path("."),
             check=True,
