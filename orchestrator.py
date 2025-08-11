@@ -58,6 +58,20 @@ class Condition:
         }
 
 
+# Helper ---------------------------------------------------------------------
+
+def _latest_success(ev_list):
+    for raw in reversed(ev_list or []):
+        try:
+            d = json.loads(raw)
+        except Exception:
+            continue
+        s = d.get("summary", "")
+        if isinstance(s, str) and not s.startswith("error:"):
+            return d
+    return None
+
+
 # ----- Orchestrator ----------------------------------------------------------
 
 class Orchestrator:
@@ -117,6 +131,8 @@ class Orchestrator:
         """Use the LLM to deterministically derive conditions."""
         claim = finding.get("claim", "")
         related_files = finding.get("files", [])
+        seed = (finding.get("evidence", {}) or {}).get("seed", {})
+        highlights = (seed.get("highlights") or [])[:3]
         messages = [
             {
                 "role": "system",
@@ -137,7 +153,7 @@ class Orchestrator:
                 "role": "user",
                 "content": (
                     f"Goal: Break down the bug claim into minimal, testable security CONDITIONS that, if individually decided, collectively allow a final verdict (TRUE POSITIVE / FALSE POSITIVE).\n\n"
-                    f"Inputs:\n- claim: \"{claim}\"\n- related_files: {json.dumps(related_files)}\n\n"
+                    f"Inputs:\n- claim: \"{claim}\"\n- related_files: {json.dumps(related_files)}\n- seed_evidence_highlights: {json.dumps(highlights)}\n\n"
                     "Mindset:\n- Act as a FALSE-POSITIVE filter: add decisive checks that would invalidate the claim (e.g., input not user-controlled; guard exists on all paths; sanitization before sink).\n- Prefer objective, repo-local observations.\n\n"
                     "Constraints:\n- 1–5 conditions.\n- Each condition must be objectively checkable via codex-executable tasks.\n- Each condition must state an acceptance criterion tied to the final verdict.\n"
                 ),
@@ -211,6 +227,12 @@ class Orchestrator:
     def generate_tasks(self, condition: Condition, code_path: Path) -> List[dict]:
         """Generate tasks to gather evidence for ``condition``."""
         tasks: List[dict] = []
+        last_sum = ""
+        if condition.evidence:
+            try:
+                last_sum = json.loads(condition.evidence[-1]).get("summary", "")
+            except Exception:
+                pass
         messages = [
             {
                 "role": "system",
@@ -227,9 +249,10 @@ class Orchestrator:
                 "role": "user",
                 "content": (
                     "Goal: Produce an ordered, minimal plan of NATURAL-LANGUAGE tasks that will decide this condition.\n\n"
-                    f"Inputs:\n- condition: {{\"desc\":\"{condition.description}\",\"accept\":\"{condition.accept}\",\"reject\":\"{condition.reject}\"}}\n- suggested_tasks: {json.dumps(condition.suggested_tasks)}\n\n"
+                    f"Inputs:\n- condition: {{\"desc\":\"{condition.description}\",\"accept\":\"{condition.accept}\",\"reject\":\"{condition.reject}\"}}\n- suggested_tasks: {json.dumps(condition.suggested_tasks)}\n- last_observation_summary: {json.dumps(last_sum)}\n\n"
                     "Constraints:\n"
                     "- Emit 1–3 tasks, each is *exec*.\n"
+                    "- If the last observation summary starts with 'error:', avoid proposing the same operation class; choose an alternative read-only check.\n"
                     "- Final task must directly test the condition's ACCEPT vs REJECT.\n"
                     "- Each task is a single clear action to perform in the repository (no pseudo-DSL).\n"
                     "- Use plain English; do not mention internal mode names.\n"
@@ -310,9 +333,9 @@ class Orchestrator:
         """Deterministically judge ``condition`` based on available evidence."""
         if not condition.evidence:
             return "unknown"
-        latest_raw = condition.evidence[-1]
+        latest_ok = _latest_success(condition.evidence)
         try:
-            obs = json.loads(latest_raw)
+            obs = latest_ok or json.loads(condition.evidence[-1])
         except Exception:
             condition.rationale = "latest observation not valid JSON"
             return "unknown"
@@ -330,7 +353,7 @@ class Orchestrator:
             {
                 "role": "system",
                 "content": (
-                    f"{BANNER}\nSTAGE: judge\n\nDecide condition state from the latest observation only, anchored to the acceptance/rejection criteria."
+                    f"{BANNER}\nSTAGE: judge\n\nDecide using the latest successful observation; if none, return unknown with the single most decisive evidence needed."
                 ),
             },
             {

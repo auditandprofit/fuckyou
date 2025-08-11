@@ -55,15 +55,17 @@ class CodexAgent:
                 "SYSTEM:\n"
                 f"{BANNER}\nSTAGE: exec\n\n"
                 "USER:\n"
-                "Repo root is the working dir. Primary file: {path}.\n"
                 f"Primary file: {path}\n"
                 f"Goal: {payload}\n\n"
                 "Policies:\n"
-                "- No network and no writes. If the goal would modify files or use the network, "
-                "  DO NOT perform it; instead return the schema with "
-                "\"summary\":\"error: blocked action <reason>\" and empty citations.\n\n"
+                "- No network. No file modifications. Read-only analysis only.\n"
+                "- Do not spawn external processes.\n"
+                "- If an action would violate policy or cannot be performed, return \n"
+                "  {\"type\":\"exec_observation\",\"summary\":\"error: <reason>\",\"citations\":[],\"notes\":\"\"}\n\n"
                 "Output STRICT JSON:\n"
-                "{\"type\":\"exec_observation\",\"summary\":\"<short or 'error: ...'>\",\"citations\":[{\"path\":\"<repo-rel>\",\"start\":<int>,\"end\":<int>,\"sha1\":\"<hex>\"}],\"notes\":\"<optional>\"}\n"
+                "{\"type\":\"exec_observation\",\"summary\":\"<short or 'error: ...'>\","
+                " \"citations\":[{\"path\":\"<repo-rel>\",\"start_line\":<int>,\"end_line\":<int>,\"sha1\":\"<hex, optional>\"}],"
+                " \"notes\":\"<optional>\"}\n"
                 "If execution fails, still follow the schema with summary starting 'error:' and empty citations.\n"
             )
         raise ValueError("unsupported kind")
@@ -86,9 +88,9 @@ class CodexAgent:
                 if not (
                     isinstance(c, dict)
                     and isinstance(c.get("path"), str)
-                    and isinstance(c.get("start"), int)
-                    and isinstance(c.get("end"), int)
-                    and isinstance(c.get("sha1"), str)
+                    and isinstance(c.get("start_line"), int)
+                    and isinstance(c.get("end_line"), int)
+                    and (c.get("sha1") is None or isinstance(c.get("sha1"), str))
                 ):
                     raise ValueError("invalid citation object")
             return data
