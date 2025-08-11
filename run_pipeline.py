@@ -7,6 +7,7 @@ from pathlib import Path
 import hashlib
 import json
 import logging
+import shutil
 import time
 
 from codex_dispatch import CodexClient
@@ -54,11 +55,6 @@ def main(argv: list[str] | None = None) -> None:
         )
 
     manifest_path = Path(args.manifest)
-    try:
-        manifest_files = validate_manifest(manifest_path)
-    except Exception as exc:
-        print(f"Manifest error: {exc}")
-        raise SystemExit(1)
 
     git_short = get_git_short()
     run_ts = utc_timestamp()
@@ -74,11 +70,32 @@ def main(argv: list[str] | None = None) -> None:
 
     logger = logging.getLogger("orchestrator")
     logger.setLevel(logging.INFO)
+    formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
     fh = logging.FileHandler(run_path / "orchestrator.log")
-    fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    fh.setFormatter(formatter)
+    sh = logging.StreamHandler()
+    sh.setFormatter(formatter)
     logger.addHandler(fh)
-    logger.info("Run %s commit %s", run_id, git_short)
+    logger.addHandler(sh)
 
+    logger.info("Run %s commit %s", run_id, git_short)
+    logger.info("Parsed args: %s", args)
+    logger.info("Repo root: %s", repo_root)
+    logger.info("Manifest path: %s", manifest_path)
+    logger.info("Validating manifest")
+    try:
+        manifest_files = validate_manifest(manifest_path)
+    except Exception as exc:
+        logger.error("Manifest error: %s", exc)
+        fh.close()
+        logger.removeHandler(fh)
+        logger.removeHandler(sh)
+        shutil.rmtree(run_path, ignore_errors=True)
+        raise SystemExit(1)
+    logger.info("Manifest validated: %d files", len(manifest_files))
+    logger.info("Run directory: %s", run_path)
+
+    start_time = time.time()
     run_data = {
         "run_id": run_id,
         "manifest_path": str(manifest_path),
@@ -134,6 +151,9 @@ def main(argv: list[str] | None = None) -> None:
                 "conditions": [],
                 "tasks_log": [],
             }
+            logger.info(
+                "Writing finding %s for %s", finding_id, rel_path.as_posix()
+            )
             atomic_write(
                 run_path / f"finding_{finding_id}.json",
                 json.dumps(finding, indent=2).encode(),
@@ -155,6 +175,13 @@ def main(argv: list[str] | None = None) -> None:
 
     run_data["finished_at"] = utc_now_iso()
     write_run_json(run_path, run_data)
+    duration = time.time() - start_time
+    logger.info(
+        "Run complete. Findings written: %d, errors: %d, duration: %.2fs",
+        counts["findings_written"],
+        counts["errors"],
+        duration,
+    )
 
 
 if __name__ == "__main__":

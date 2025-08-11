@@ -80,7 +80,9 @@ class Orchestrator:
     ) -> List[Dict]:
         findings: List[Dict] = []
         for code_path in manifest_files:
+            self.logger.info("Discovering %s", code_path.as_posix())
             data = self.agent(f"codex:discover:{code_path.as_posix()}")
+            self.logger.info("Discovered %s", code_path.as_posix())
             findings.append(
                 {
                     "claim": data.get("claim", f"Review {code_path.as_posix()}"),
@@ -126,6 +128,10 @@ class Orchestrator:
                 },
             }
         ]
+        self.logger.info(
+            "LLM derive_conditions for claim: %s",
+            finding.get("claim", ""),
+        )
         response = self._with_retries(
             openai_generate_response,
             messages=messages,
@@ -172,6 +178,9 @@ class Orchestrator:
                 },
             }
         ]
+        self.logger.info(
+            "LLM generate_tasks for condition: %s", condition.description
+        )
         response = self._with_retries(
             openai_generate_response,
             messages=messages,
@@ -227,6 +236,9 @@ class Orchestrator:
                 },
             }
         ]
+        self.logger.info(
+            "LLM judge_condition for condition: %s", condition.description
+        )
         response = self._with_retries(
             openai_generate_response,
             messages=messages,
@@ -272,6 +284,10 @@ class Orchestrator:
                 },
             }
         ]
+        self.logger.info(
+            "LLM narrow_subconditions for condition: %s",
+            condition.description,
+        )
         response = self._with_retries(
             openai_generate_response,
             messages=messages,
@@ -331,18 +347,24 @@ class Orchestrator:
             finding = json.load(fh)
         code_path = Path(finding.get("provenance", {}).get("path", ""))
         for step in range(max_steps):
+            self.logger.info(
+                "Resolve step %d for condition '%s'", step + 1, condition.description
+            )
             tasks = self.generate_tasks(condition, code_path)
+            self.logger.info(
+                "Generated %d tasks for '%s'", len(tasks), condition.description
+            )
             if not tasks:
                 break
-            self.logger.info(
-                "Tasks for condition '%s' [step %d]: %s",
-                condition.description,
-                step + 1,
-                tasks,
-            )
             self._execute_tasks(finding_path, condition, tasks)
             state = self.judge_condition(condition)
             condition.state = state
+            self.logger.info(
+                "Condition '%s' state after step %d: %s",
+                condition.description,
+                step + 1,
+                state,
+            )
             if state != "unknown":
                 return
             subs = self._narrow_subconditions(condition)
@@ -362,7 +384,11 @@ class Orchestrator:
             self.logger.info("Processing %s", finding_file.name)
             with open(finding_file) as fh:
                 finding = json.load(fh)
+            self.logger.info("Deriving conditions for %s", finding_file.name)
             conditions = self.derive_conditions(finding)
+            self.logger.info(
+                "Derived %d conditions for %s", len(conditions), finding_file.name
+            )
             for condition in conditions:
                 self.resolve_condition(condition, finding_file, max_steps=max_steps)
             # reload tasks_log in case tasks were executed
