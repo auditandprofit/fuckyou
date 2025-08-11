@@ -1,178 +1,96 @@
-# Anchor — Deterministic Code Security Audits
+# Architecture Anchor (Conceptual North Star)
 
-*End‑to‑end, evidence‑driven audits optimized for **low false positives**.*
-
-Anchor runs a fixed pipeline over a repository and produces signed‑off findings with traceable evidence. Each stage (orchestrator and agent/Codex) **works in isolation** behind a small, explicit contract, yet is aware it participates in a larger automated security audit.
+**“Anchor”** here means the *ideal architecture skeleton* for this repo — a permanent, name-agnostic description of how the system should behave at a high level. It is **not** the product name and **not** an implementation spec. Treat this as the north star across all iterations.
 
 ---
 
-## Core Principles
+# Immutable Flow
 
-* **Isolation by contract**: Every stage reads inputs and emits strict JSON outputs. No shared memory, no hidden state.
-* **Evidence over speculation**: Claims, conditions, and verdicts must cite concrete code regions.
-* **Determinism**: LLM calls run with temperature=0 and bounded retries; agents are read‑only and offline (no network, no writes to the repo).
-* **Low false positive rate**: The system defaults to **UNKNOWN** unless evidence meets acceptance criteria. Any failed condition flips the finding to **FALSE\_POSITIVE**.
-
----
-
-## Pipeline Overview
-
-> Stages: **discover → derive → plan → exec → judge → narrow**
-
-1. **Seed Input** — A manifest enumerates code files to review.
-2. **Produce Findings** — An agent “discovers” a falsifiable claim per file with 1–3 evidence highlights.
-3. **Derive Conditions** — The orchestrator breaks the claim into minimal, testable conditions.
-4. **Plan/Exec Loop** — For each condition, the orchestrator plans tasks; the agent executes them locally and returns strict JSON observations with citations.
-5. **Judge** — Using latest successful observation(s), the orchestrator judges each condition: `satisfied | failed | unknown`.
-6. **Narrow** — If `unknown`, derive sub‑conditions that directly target the missing evidence and iterate.
-7. **Verdict** — Aggregate condition states to produce: `TRUE_POSITIVE | FALSE_POSITIVE | UNKNOWN`.
-
----
-
-## Stage Contracts (I/O)
-
-All stages communicate via strict JSON. The agent is policy‑restricted: **read‑only, no external processes, no network**.
-
-### Discover → Finding
-
-```json
-{
-  "schema_version": 1,
-  "stage": "discover",
-  "claim": "<falsifiable security claim incl. brief threat context>",
-  "files": ["<repo-rel path>", "..."],
-  "evidence": {
-    "highlights": [
-      {"path": "<repo-rel>", "region": {"start_line": 10, "end_line": 24}, "why": "<security-relevant>"}
-    ]
-  }
-}
+```mermaid
+flowchart LR
+  A[Discover] --> B[Derive]
+  B --> C[Plan]
+  C --> D[Execute]
+  D --> E[Judge]
+  E -->|unknown| F[Narrow]
+  F --> C
+  E --> G[Verdict]
 ```
 
-### Exec (task result)
+1. **Discover** — Formulate a *falsifiable* claim grounded in specific code regions.
+2. **Derive** — Break the claim into a few *objective, testable conditions*.
+3. **Plan** — Propose the *minimum* actions needed to decide each condition.
+4. **Execute** — Perform actions *read-only* and produce machine-readable observations **with citations**.
+5. **Judge** — Decide each condition (`satisfied | failed | unknown`) using the *latest successful* observation.
+6. **Narrow** — If unknown, generate targeted subconditions that remove the uncertainty; loop back.
+7. **Verdict** — Aggregate condition states into a final finding with rationale and traceable evidence.
 
-```json
-{
-  "schema_version": 1,
-  "stage": "exec",
-  "summary": "<short conclusion or 'error: ...'>",
-  "citations": [
-    {"path": "<repo-rel>", "start_line": 120, "end_line": 137, "sha1": "<optional>"}
-  ],
-  "notes": "<optional>"
-}
-```
-
-### Judge (internal output)
-
-```json
-{
-  "schema_version": 1,
-  "stage": "judge",
-  "state": "satisfied | failed | unknown",
-  "rationale": "<why the state holds>",
-  "evidence_refs": [0]
-}
-```
-
-> The orchestrator persists the evolving condition objects, task logs, and verdicts under `findings/`.
+This loop is permanent; tooling beneath it may change.
 
 ---
 
-## What “Isolation” Means Here
+# Non-Negotiable Invariants
 
-* **Replaceable stages**: You can swap the agent or the orchestrator as long as the I/O contracts stay intact.
-* **Stateless execution**: A stage must make decisions **only** from its input blobs and the repository contents; any caching is optional and keyed to request content.
-* **Policy walls**: The agent enforces: *no network, no repo writes, no external processes*. The orchestrator writes artifacts only to `findings/`.
-
----
-
-## Quickstart
-
-1. **Install prerequisites**
-
-   * Python 3.10+
-   * OpenAI credentials in environment (for LLM stages)
-   * A working `codex` CLI on your PATH (the deterministic executor wrapper)
-
-2. **Create a manifest** (one repo‑relative file per line):
-
-```
-examples/example1.py
-examples/example2.py
-```
-
-3. **Run the pipeline**
-
-```bash
-python run_pipeline.py --manifest manifest.txt --findings-dir findings --live
-```
-
-The run creates `findings/run_<timestamp>_<commit>/finding_*.json` with claims, conditions, task logs, and a final verdict.
+* **Evidence over speculation**: Every non-error observation includes citations to concrete code/artifacts.
+* **Determinism**: Same inputs → same outputs. Any randomness is bounded/removed.
+* **Isolation by contract**: Stages exchange small, strict, machine-readable blobs. No hidden state.
+* **Read-only**: No writes to the target repo; no external network effects.
+* **Low false-positive bias**: Unproven → `UNKNOWN`. A single *failed* condition (with evidence) → `FALSE_POSITIVE`.
+* **Reproducibility**: A finding can be re-run and independently checked from stored artifacts alone.
 
 ---
 
-## Live Mode
+# Roles (conceptual, interchangeable)
 
-Enable a high‑signal, line‑oriented reporter:
+* **Orchestrator** — Runs the flow, enforces contracts, persists artifacts.
+* **Analyst/Agent** — Reads/searches/parses locally; returns observations with citations.
+* **Judge** — Applies explicit decision rules to observations.
+* **Narrower** — Converts ambiguity into decisive subconditions.
+* **Store/Reporter** — Streams events and stores artifacts for traceability.
 
-* `ANCHOR_LIVE=1` (or pass `--live`)
-* `ANCHOR_LIVE_FORMAT=text|json` (default: text)
-* Pretty text auto‑detects TTY and width; JSON emits newline‑delimited events.
-
----
-
-## Artifact Layout
-
-```
-findings/
-  run_<UTCts>_<gitShort>/
-    orchestrator.log
-    run.json                      # metadata: model, retries, manifest SHA1, git, timings
-    finding_<id>.json             # claim, evidence, conditions (+sub), tasks_log, verdict
-```
-
-`run.json` tracks counts, start/end times, commit/dirty state, and configured LLM parameters.
+> Any concrete technology can implement these roles as long as the invariants and flow hold.
 
 ---
 
-## Design Details
+# Interface Shapes (format *shape*, not schemas)
 
-* **Determinism & Retries**: LLM temperature=0 with bounded retries (`ANCHOR_OPENAI_RETRIES`). Optional response memoization via `LLM_MEMO_DIR`.
-* **Strict schemas**: Agent responses are validated; missing citations yield an `error: missing-citation` summary.
-* **Verdict rules**:
+Keep payloads small and explicit. Suggested minimal shapes:
 
-  * All conditions `satisfied` ⇒ `TRUE_POSITIVE`
-  * Any `failed` and none `satisfied` ⇒ `FALSE_POSITIVE`
-  * Otherwise ⇒ `UNKNOWN`
+* **Claim**
+  `{ claim: string, citations: [{path, start_line, end_line}] }`
 
----
+* **Condition**
+  `{ desc, accept, reject }`
 
-## Extending Anchor
+* **Planned Task**
+  `{ task: string }  // a single, clear, repo-local action`
 
-* Add new operation classes to the agent (e.g., `search`, `read-file`, `ast-parse`, `callgraph`, `dataflow`) without changing the contract.
-* Implement alternative planners or judges as long as they accept the same inputs and emit the same outputs.
+* **Observation**
+  `{ summary: string, citations: [{path, start_line, end_line}], notes? }`
 
----
+* **Judgment**
+  `{ state: "satisfied"|"failed"|"unknown", rationale, evidence_refs: [int] }`
 
-## Non‑Goals
+* **Verdict**
+  `{ state: "TRUE_POSITIVE"|"FALSE_POSITIVE"|"UNKNOWN", reason }`
 
-* Heuristic “best guess” findings with no citations.
-* Modifying the target repository during analysis.
-* Hidden coupling between stages.
-
----
-
-## Repository Map (key files)
-
-* `run_pipeline.py` — CLI entrypoint, run orchestration, persist artifacts
-* `orchestrator.py` — derive/plan/judge/narrow logic, contract enforcement
-* `codex_agent.py` — agent wrapper around `codex` with strict policies
-* `codex_dispatch.py` — deterministic subprocess runner with retries/backoff
-* `util/` — reporting, paths, manifest validation, OpenAI wrapper, time, IO
-* `examples/` — trivial sample inputs
+Implementation may extend these; **do not** weaken them.
 
 ---
 
-**Anchor turns code into defensible security evidence.** If a claim can’t be proven, it isn’t a finding.
+# Extension Rules
+
+* You may swap analyzers, planners, models, or storage — **without** changing the flow or invariants.
+* Prefer *smaller, stricter* interfaces over rich ones. If extra data isn’t required for judgment, don’t add it.
+* When in doubt, default to `UNKNOWN` and specify the *single* missing evidence needed.
+
+---
+
+# How to Use This Anchor
+
+* Treat this file as the **north-star contract**.
+* If a proposal conflicts with *flow* or *invariants*, change the proposal — not this anchor.
+* If a detail isn’t here, it’s intentionally *not* fixed; feel free to iterate beneath the anchor.
+
+*This document is the enduring purpose and architecture skeleton. Everything else is implementation.*
 
