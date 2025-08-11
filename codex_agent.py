@@ -66,15 +66,20 @@ class CodexAgent:
     def _build_prompt(self, kind: str, path: str, payload: str | None = None) -> str:
         if kind == "discover":
             return (
-                "SYSTEM:\nStrict JSON only.\n\nUSER:\n"
-                f"Action: DISCOVER\nPath: {path}\n"
-                'Return: {"type":"discover","claim":"...","files":["..."],"evidence":{...}}\n'
+                "SYSTEM:\nStrict JSON only. Deterministic. No network. No writes.\n\n"
+                "USER:\n"
+                f"Action: DISCOVER\nPath: {path}\n\n"
+                "Purpose:\n- Extract the review unit for security adjudication.\n"
+                "- Provide a concise claim, the exact files involved, and initial seed evidence helpful for later tasking.\n\n"
+                "Output JSON:\n{\"type\":\"discover\",\n \"claim\":\"<short claim or restatement>\",\n \"files\": [\"<repo-rel path>\", ...],\n \"evidence\":{\"highlights\": [\n    {\"path\":\"<repo-rel>\",\"region\":{\"start_line\":<int>,\"end_line\":<int>},\"why\":\"<risk-relevant reason>\"}\n ]}}\n"
             )
         if kind == "exec":
             return (
-                "SYSTEM:\nStrict JSON only.\n\nUSER:\n"
-                f"Action: EXEC\nPath: {path}\nTask: {payload}\n"
-                'Return: {"type":"exec","task":"...","result":{...}}\n'
+                "SYSTEM:\nStrict JSON only. Deterministic. No network. No writes. Execute EXACTLY the provided task.\n\n"
+                "USER:\n"
+                f"Action: EXEC\nPath: {path}\nTask: {payload}\n\n"
+                "Purpose:\n- Produce structured, reproducible observations that can satisfy or fail a condition.\n\n"
+                "Output JSON:\n{\"type\":\"exec\",\n \"task\":\"<verbatim>\",\n \"result\":{\n   \"observations\": [\n     {\"kind\":\"static|symbolic|pattern|flow|constraint|runtime-stub\",\n      \"detail\":\"<what was found>\",\n      \"path\":\"<repo-rel>\",\n      \"region\":{\"start_line\":<int>,\"end_line\":<int>}\n     }\n   ],\n   \"signals\":{\"accept\":false,\"reject\":false,\"notes\":\"<if both false, explain why inconclusive>\"}\n }}\n"
             )
         action = {
             "read": "READ",
