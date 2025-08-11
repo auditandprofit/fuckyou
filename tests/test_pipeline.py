@@ -40,10 +40,7 @@ def clean_env(tmp_path, monkeypatch):
         "if 'Action: DISCOVER' in prompt:\n"
         "    out = {\"type\":\"discover\",\"claim\":f'Review {path}',\"files\":[path],\"evidence\":{}}\n"
         "elif 'Action: EXEC' in prompt:\n"
-        "    tm = re.search(r'Task: (.*)', prompt)\n"
-        "    payload = tm.group(1).strip() if tm else ''\n"
-        "    from agent import run_agent\n"
-        "    out = {\"type\":\"exec\",\"task\":payload,\"result\":run_agent(payload)}\n"
+        "    out = {\"type\":\"exec_observation\",\"summary\":\"ok\",\"citations\":[]}\n"
         "else:\n"
         "    out = {\"error\":\"unknown\"}\n"
         "open(out_path, 'w').write(json.dumps(out))\n"
@@ -172,6 +169,7 @@ def test_seeded_findings_have_claim_and_evidence(monkeypatch):
         assert data["evidence"].get("seed") is not None
         assert "tasks_log" in data
         assert "conditions" in data
+        assert "verdict" in data
 
 
 def test_manifest_is_single_source(monkeypatch):

@@ -1,6 +1,7 @@
 import sys
 import json
 from pathlib import Path
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -68,11 +69,7 @@ def test_discover():
 
 
 def test_exec():
-    data = {
-        "type": "exec",
-        "task": "stat:p",
-        "result": {"type": "stat", "path": "p", "size": 1, "sha1": "aa"},
-    }
+    data = {"type": "exec_observation", "summary": "ok", "citations": []}
     agent = _agent_with_result(data)
     res = agent.run("codex:exec:p::stat:p")
     assert res == data
@@ -152,5 +149,5 @@ def test_invalid_json():
     client = DummyCodexClient(result=result)
     workdir = str(Path(__file__).resolve().parents[1])
     agent = CodexAgent(client, workdir=workdir)
-    res = agent.run("read:examples/example1.py")
-    assert res == "not json"
+    with pytest.raises(ValueError):
+        agent.run("read:examples/example1.py")

@@ -6,6 +6,7 @@ from pathlib import Path
 from codex_dispatch import CodexClient, CodexError, CodexTimeout
 
 MAX_BYTES = 100_000
+BANNER = "Deterministic security auditor. No network. No writes. JSON only."
 
 
 class CodexAgent:
@@ -66,7 +67,8 @@ class CodexAgent:
     def _build_prompt(self, kind: str, path: str, payload: str | None = None) -> str:
         if kind == "discover":
             return (
-                "SYSTEM:\nStrict JSON only. Deterministic. No network. No writes.\n\n"
+                "SYSTEM:\n"
+                f"{BANNER}\nSTAGE: discover\n\n"
                 "USER:\n"
                 f"Action: DISCOVER\nPath: {path}\n\n"
                 "Purpose:\n- Formulate a concrete security bug claim (plausible vulnerability) grounded in this file and directly related code (imports/callers/siblings).\n- Return minimal related files + seed evidence.\n\n"
@@ -74,11 +76,11 @@ class CodexAgent:
             )
         if kind == "exec":
             return (
-                "SYSTEM:\nStrictly deterministic. No network. No writes.\n\n"
+                "SYSTEM:\n"
+                f"{BANNER}\nSTAGE: exec\n\n"
                 "USER:\n"
-                f"Do this goal in the repo at {path}:\n"
-                f"{payload}\n\n"
-                "Answer concisely. If you cite code, include `path: start_line–end_line`."
+                f"Repository path: {path}\nGoal: {payload}\n\n"
+                "Output STRICT JSON: {\"type\":\"exec_observation\",\"summary\":\"<short>\",\"citations\":[],\"notes\":\"<optional>\"}\n"
             )
         action = {
             "read": "READ",
@@ -88,8 +90,7 @@ class CodexAgent:
         }[kind]
         return (
             "SYSTEM:\n"
-            "You are a deterministic repository tool. Only output valid JSON.\n"
-            "No extra text. No markdown.\n\n"
+            f"{BANNER}\nSTAGE: {kind}\n\n"
             "USER:\n"
             f"Action: {action}\n"
             f"Path: {path}\n"
@@ -114,11 +115,20 @@ class CodexAgent:
     def _postprocess(self, kind: str, path: str, res):
         try:
             data = json.loads(res.stdout)
-            if isinstance(data, dict) and "type" in data:
-                return data
-            return {"result": data}
-        except Exception:
-            return res.stdout
+        except Exception as exc:
+            raise ValueError("non-json output") from exc
+        if kind == "exec":
+            if not (
+                isinstance(data, dict)
+                and data.get("type") == "exec_observation"
+                and isinstance(data.get("summary"), str)
+                and isinstance(data.get("citations"), list)
+            ):
+                raise ValueError("invalid exec observation")
+            return data
+        if not (isinstance(data, dict) and data.get("type")):
+            raise ValueError("invalid response")
+        return data
 
     # ---------------- Public API -----------------
     def run(self, task: str) -> dict:
