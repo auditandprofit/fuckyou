@@ -20,7 +20,7 @@ def git_changed_files(since: str | None = None, window_days: int | None = None) 
         else:
             args = ["git", "diff", "--name-only"]
             if since:
-                args.append(f"{since}..HEAD")
+                args.append(since)
             out = subprocess.check_output(args, stderr=subprocess.DEVNULL, text=True)
     except Exception:
         return []

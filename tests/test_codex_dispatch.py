@@ -32,3 +32,18 @@ time.sleep(60)
     pid = int((tmp_path / "pid").read_text())
     with pytest.raises(ProcessLookupError):
         os.kill(pid, 0)
+
+
+def test_exec_uses_sandbox(tmp_path):
+    codex = tmp_path / "codex"
+    codex.write_text(
+        """#!/usr/bin/env python3
+import sys, json
+out_path = sys.argv[sys.argv.index('--output-last-message') + 1]
+open(out_path, 'w').write(json.dumps({}))
+"""
+    )
+    codex.chmod(0o755)
+    client = CodexClient(bin_path=str(codex))
+    result = client.exec(prompt="", workdir=str(tmp_path))
+    assert all("--dangerously-bypass-approvals-and-sandbox" not in c for c in result.cmd)

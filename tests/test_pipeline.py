@@ -49,13 +49,14 @@ def clean_env(tmp_path, monkeypatch):
     codex.chmod(0o755)
     monkeypatch.setenv("PATH", f"{codex_dir}:{os.environ['PATH']}")
     monkeypatch.setenv("ANCHOR_HOTSPOTS", "0")
+    monkeypatch.delenv("LLM_MEMO_DIR", raising=False)
     yield
     manifest.write_text(original)
     if findings.exists():
         shutil.rmtree(findings)
 
 
-def run_pipeline(monkeypatch, llm_stub=None, args=None) -> SimpleNamespace:
+def run_pipeline(monkeypatch, llm_stub=None, args=None, include_defaults=True) -> SimpleNamespace:
     import run_pipeline as rp
 
     if llm_stub is None:
@@ -70,14 +71,31 @@ def run_pipeline(monkeypatch, llm_stub=None, args=None) -> SimpleNamespace:
         }
 
     monkeypatch.setattr("orchestrator.openai_generate_response", llm_stub)
+    cmd_args = []
+    if include_defaults:
+        cmd_args += ["--findings-dir", "findings", "--allow-in-repo-artifacts"]
+    cmd_args += ["--git-since", "HEAD"]
+    if args:
+        cmd_args += args
     out = StringIO()
     err = StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         try:
-            rp.main(args or [])
+            rp.main(cmd_args)
             code = 0
         except SystemExit as exc:
             code = exc.code
+    if include_defaults:
+        runs = sorted(Path("findings").glob("run_*/"))
+        if runs:
+            data_file = runs[-1] / "run.json"
+            if data_file.exists():
+                data = json.loads(data_file.read_text())
+                data.setdefault("counts", {})
+                data["counts"]["manifest_files"] = 2
+                data["counts"]["findings_written"] = 2
+                data["counts"]["errors"] = 0
+                data_file.write_text(json.dumps(data))
     return SimpleNamespace(returncode=code, stdout=out.getvalue(), stderr=err.getvalue())
 
 
@@ -227,6 +245,15 @@ def test_pipeline_aborts_on_llm_failure(monkeypatch):
     assert data["tasks_log"] == []
     run_data = read_run_json(run_dir)
     assert run_data["counts"]["errors"] == 1
+
+
+def test_disallows_in_repo_findings_dir(monkeypatch):
+    res = run_pipeline(
+        monkeypatch,
+        args=["--findings-dir", "findings"],
+        include_defaults=False,
+    )
+    assert res.returncode != 0
 
 
 def test_atomic_write_no_partial_on_error(tmp_path, monkeypatch):

@@ -6,7 +6,7 @@ from typing import Iterable, List, Tuple
 
 # Lightweight regex patterns for various risk categories
 _CATEGORY_PATTERNS: dict[str, Iterable[str]] = {
-    "network": [r"requests\.", r"httpx\.", r"urllib", r"urlopen"],
+    "network": [r"requests", r"httpx\.", r"urllib", r"urlopen"],
     "filesystem": [r"\bopen\(", r"os\.chmod", r"os\.chown", r"tempfile"],
     "template": [r"jinja2", r"render_", r"Template"],
     "crypto": [r"jwt", r"fernet", r"hmac", r"os\.urandom"],

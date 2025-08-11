@@ -82,7 +82,6 @@ class CodexClient:
             "exec",
             "--output-last-message",
             str(out_file),
-            "--dangerously-bypass-approvals-and-sandbox",
             "--skip-git-repo-check",
             "-C",
             workdir,

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+import tempfile
 from pathlib import Path
 
 from codex_dispatch import CodexClient, CodexError, CodexTimeout
@@ -15,9 +17,24 @@ BANNER = (
 class CodexAgent:
     def __init__(self, codex: CodexClient, *, workdir: str, default_flags: list[str] | None = None, timeout: float = 60):
         self.codex = codex
-        self.workdir = workdir
         self.default_flags = default_flags or []
         self.timeout = timeout
+
+        # Copy repository to a temporary read-only location to enforce no writes.
+        orig = Path(workdir).resolve()
+        tmp_root = Path(tempfile.mkdtemp(prefix="codex_ro_"))
+        repo_copy = tmp_root / "repo"
+        shutil.copytree(orig, repo_copy)
+        for p in repo_copy.rglob("*"):
+            try:
+                if p.is_dir():
+                    p.chmod(0o555)
+                else:
+                    p.chmod(0o444)
+            except OSError:
+                pass
+        repo_copy.chmod(0o555)
+        self.workdir = str(repo_copy)
 
     # ---------------- Parsing & Validation -----------------
     def _parse_task(self, task: str):
