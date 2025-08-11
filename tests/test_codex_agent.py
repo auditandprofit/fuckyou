@@ -3,9 +3,14 @@ import json
 from pathlib import Path
 import pytest
 
+import sys
+import json
+from pathlib import Path
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from codex_agent import CodexAgent, MAX_BYTES
+from codex_agent import CodexAgent
 from codex_dispatch import CodexError, CodexExecResult, CodexTimeout
 
 
@@ -31,36 +36,6 @@ def _agent_with_result(data):
     client = DummyCodexClient(result=result)
     workdir = str(Path(__file__).resolve().parents[1])
     return CodexAgent(client, workdir=workdir)
-
-
-def test_read():
-    data = {"type": "read", "path": "examples/example1.py", "bytes": "hi", "sha1": "00"}
-    agent = _agent_with_result(data)
-    res = agent.run("read:examples/example1.py")
-    assert res == data
-
-
-def test_stat():
-    data = {"type": "stat", "path": "p", "size": 5, "sha1": "aa"}
-    agent = _agent_with_result(data)
-    res = agent.run("stat:examples/example1.py")
-    assert res == data
-
-
-def test_py_functions():
-    data = {"type": "py:functions", "path": "p", "functions": [{"name": "f", "args": 1}]}
-    agent = _agent_with_result(data)
-    res = agent.run("py:functions:examples/example1.py")
-    assert res == data
-
-
-def test_py_classes():
-    data = {"type": "py:classes", "path": "p", "classes": [{"name": "C", "methods": ["m"]}]}
-    agent = _agent_with_result(data)
-    res = agent.run("py:classes:examples/example2.py")
-    assert res == data
-
-
 def test_discover():
     data = {"type": "discover", "claim": "c", "files": ["p"], "evidence": {}}
     agent = _agent_with_result(data)
@@ -75,23 +50,22 @@ def test_exec():
     assert res == data
 
 
-def test_timeout():
+def test_timeout_exec():
     client = DummyCodexClient(error=CodexTimeout("boom"))
     workdir = str(Path(__file__).resolve().parents[1])
     agent = CodexAgent(client, workdir=workdir)
-    res = agent.run("read:examples/example1.py")
-    assert res["error"] == "timeout"
+    res = agent.run("codex:exec:p::x")
+    assert res["summary"].startswith("error:")
 
 
-def test_codex_exit():
+def test_codex_exit_exec():
     result = CodexExecResult(stdout="", stderr="bad", returncode=2, duration_sec=0.0, cmd=["codex"])
     err = CodexError(result)
     client = DummyCodexClient(error=err)
     workdir = str(Path(__file__).resolve().parents[1])
     agent = CodexAgent(client, workdir=workdir)
-    res = agent.run("read:examples/example1.py")
-    assert res["error"] == "codex-exit"
-    assert res["code"] == 2
+    res = agent.run("codex:exec:p::x")
+    assert res["summary"].startswith("error:")
 
 
 def test_unknown_verb():
@@ -104,18 +78,6 @@ def test_unknown_verb():
         assert "unsupported task" in str(e)
     else:  # pragma: no cover
         assert False, "ValueError not raised"
-
-
-def test_path_escape():
-    client = DummyCodexClient()
-    workdir = str(Path(__file__).resolve().parents[1])
-    agent = CodexAgent(client, workdir=workdir)
-    try:
-        agent.run("read:../secret")
-    except ValueError as e:
-        assert "outside" in str(e)
-    else:  # pragma: no cover
-        assert False
 
 
 def test_path_escape_custom_verbs():
@@ -136,18 +98,10 @@ def test_path_escape_custom_verbs():
         assert False
 
 
-def test_no_truncate_bytes():
-    long_bytes = "x" * (MAX_BYTES + 10)
-    data = {"type": "read", "path": "p", "bytes": long_bytes, "sha1": "aa"}
-    agent = _agent_with_result(data)
-    res = agent.run("read:examples/example1.py")
-    assert len(res["bytes"]) == len(long_bytes)
-
-
 def test_invalid_json():
     result = CodexExecResult(stdout="not json", stderr="", returncode=0, duration_sec=0.0, cmd=["codex"])
     client = DummyCodexClient(result=result)
     workdir = str(Path(__file__).resolve().parents[1])
     agent = CodexAgent(client, workdir=workdir)
-    with pytest.raises(ValueError):
-        agent.run("read:examples/example1.py")
+    res = agent.run("codex:exec:p::x")
+    assert res["summary"].startswith("error:")

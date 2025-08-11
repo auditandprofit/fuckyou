@@ -9,11 +9,11 @@ def test_parse_responses_top_level():
             {
                 "type": "tool_call",
                 "name": "emit_tasks",
-                "arguments": json.dumps({"tasks": ["stat:x"]}),
+                "arguments": json.dumps({"tasks": ["codex:exec:x::y"]}),
             }
         ]
     }
-    assert openai_parse_function_call(resp) == ("emit_tasks", {"tasks": ["stat:x"]})
+    assert openai_parse_function_call(resp) == ("emit_tasks", {"tasks": ["codex:exec:x::y"]})
 
 
 def test_parse_responses_nested_content():
