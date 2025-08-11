@@ -13,8 +13,10 @@ def invoke_codex(*, codex_bin: str, prompt: str, work_dir: str, output_path: str
         check=True,
     )
     text = Path(output_path).read_text()
-    start = text.find("{")
-    end = text.rfind("}")
-    if start != -1 and end != -1:
-        text = text[start : end + 1]
-    return json.loads(text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("{"); end = text.rfind("}")
+        if start != -1 and end != -1:
+            return json.loads(text[start:end+1])
+        raise

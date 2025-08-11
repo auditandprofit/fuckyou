@@ -95,7 +95,10 @@ def _deps_from_requirements(root: Path) -> set[str]:
     pyproject = root / "pyproject.toml"
     if pyproject.exists():
         try:
-            import tomllib
+            try:
+                import tomllib  # py3.11+
+            except ModuleNotFoundError:
+                import tomli as tomllib  # py3.10
 
             data = tomllib.loads(pyproject.read_text())
             for dep in data.get("project", {}).get("dependencies", []) or []:

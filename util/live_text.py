@@ -71,6 +71,7 @@ class LiveTextFormatter:
             self._print_line(0, line)
 
     def _truncate(self, text: str, limit: int) -> str:
+        limit = max(limit, 4)
         if len(text) <= limit:
             return text
         half = max(0, (limit - 3) // 2)
@@ -98,10 +99,7 @@ class LiveTextFormatter:
         text = (
             f"{prefix}Finding {self.idx['finding']}/{self.idx['finding_total']}  {path}  \"{claim}\"{extra}"
         )
-        if self.is_tty:
-            self._print_line(0, text)
-        else:
-            self._print_line(0, text)
+        self._print_line(0, text)
 
     def _on_condition_request(self, claim: str) -> None:
         self.ctx["current_condition"] = claim

@@ -200,4 +200,4 @@ def openai_parse_function_call(response: Any) -> Tuple[Optional[str], Any]:
             except Exception:
                 args = {}
             return name, args
-    return None, None
+    return None, {}
