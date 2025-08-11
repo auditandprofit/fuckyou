@@ -5,7 +5,6 @@ from pathlib import Path
 
 from codex_dispatch import CodexClient, CodexError, CodexTimeout
 
-MAX_BYTES = 100_000
 BANNER = "Deterministic security auditor. No network. No writes. JSON only."
 
 
@@ -21,40 +20,16 @@ class CodexAgent:
         if task.startswith("codex:discover:"):
             kind = "discover"
             path = task.split("codex:discover:", 1)[1].strip()
-            payload = None
-        elif task.startswith("codex:exec:"):
+            path = self._repo_rel(path)
+            return (kind, path)
+        if task.startswith("codex:exec:"):
             rest = task.split("codex:exec:", 1)[1]
             if "::" not in rest:
                 raise ValueError("unsupported task")
             path, payload = rest.split("::", 1)
-            kind = "exec"
-            path = path.strip()
-            payload = payload.strip()
-        else:
-            if ":" not in task:
-                raise ValueError("unsupported task")
-            verb, rest = task.split(":", 1)
-            verb = verb.lower()
-            if verb == "py":
-                if ":" not in rest:
-                    raise ValueError("unsupported task")
-                subverb, path = rest.split(":", 1)
-                kind = f"py:{subverb.lower()}"
-            else:
-                path = rest
-                kind = verb
-            kind = kind.strip()
-            path = path.strip()
-            if kind not in {"read", "stat", "py:functions", "py:classes"}:
-                raise ValueError("unsupported task")
-            payload = None
-
-        if kind in {"discover", "exec", "read", "stat", "py:functions", "py:classes"}:
-            path = self._repo_rel(path)
-
-        if kind == "exec":
-            return (kind, path, payload)
-        return (kind, path)
+            path = self._repo_rel(path.strip())
+            return ("exec", path, payload.strip())
+        raise ValueError("unsupported task")
 
     def _repo_rel(self, p: str) -> str:
         root = Path(self.workdir).resolve()
@@ -84,34 +59,7 @@ class CodexAgent:
                 "{\"type\":\"exec_observation\",\"summary\":\"<short or 'error: ...'>\",\"citations\":[{\"path\":\"<repo-rel>\",\"start\":<int>,\"end\":<int>,\"sha1\":\"<hex>\"}],\"notes\":\"<optional>\"}\n"
                 "If execution fails, still follow the schema with summary starting 'error:' and empty citations.\n"
             )
-        action = {
-            "read": "READ",
-            "stat": "STAT",
-            "py:functions": "PY_FUNCTIONS",
-            "py:classes": "PY_CLASSES",
-        }[kind]
-        return (
-            "SYSTEM:\n"
-            f"{BANNER}\nSTAGE: {kind}\n\n"
-            "USER:\n"
-            f"Action: {action}\n"
-            f"Path: {path}\n"
-            "Constraints:\n"
-            "- Do not access network.\n"
-            "- Do not modify files.\n"
-            "- If anything fails, return {\"error\": \"...\"} with a concise reason.\n\n"
-            "Output JSON schema (strict):\n"
-            "For READ:\n"
-            "  {\"type\":\"read\",\"path\":\"<abs or repo-rel>\",\"bytes\":\"<utf-8, may contain replacements>\",\"sha1\":\"<hex>\"}\n\n"
-            "For STAT:\n"
-            "  {\"type\":\"stat\",\"path\":\"<...>\",\"size\":<int>,\"sha1\":\"<hex>\"}\n\n"
-            "For PY_FUNCTIONS:\n"
-            "  {\"type\":\"py:functions\",\"path\":\"<...>\",\"functions\":[{\"name\":\"<str>\",\"args\":<int>},...]}\n\n"
-            "For PY_CLASSES:\n"
-            "  {\"type\":\"py:classes\",\"path\":\"<...>\",\"classes\":[{\"name\":\"<str>\",\"methods\":[\"<str>\", ...]},...]}\n\n"
-            "Task:\n"
-            f"{kind}:{path}\n"
-        )
+        raise ValueError("unsupported kind")
 
     # ---------------- Post-processing -----------------
     def _postprocess(self, kind: str, path: str, res):
@@ -137,9 +85,9 @@ class CodexAgent:
                 ):
                     raise ValueError("invalid citation object")
             return data
-        if not (isinstance(data, dict) and data.get("type")):
-            raise ValueError("invalid response")
-        return data
+        if kind == "discover":
+            return data
+        raise ValueError("unsupported kind")
 
     # ---------------- Public API -----------------
     def run(self, task: str) -> dict:
@@ -148,12 +96,9 @@ class CodexAgent:
         if kind == "discover":
             path = parsed[1]
             prompt = self._build_prompt("discover", path)
-        elif kind == "exec":
+        else:  # exec
             _, path, payload = parsed
             prompt = self._build_prompt("exec", path, payload)
-        else:
-            path = parsed[1]
-            prompt = self._build_prompt(kind, path)
         try:
             res = self.codex.exec(
                 prompt=prompt,

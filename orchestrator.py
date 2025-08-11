@@ -229,9 +229,10 @@ class Orchestrator:
                     "Goal: Produce an ordered, minimal plan of NATURAL-LANGUAGE tasks that will decide this condition.\n\n"
                     f"Inputs:\n- condition: {{\"desc\":\"{condition.description}\",\"accept\":\"{condition.accept}\",\"reject\":\"{condition.reject}\"}}\n- suggested_tasks: {json.dumps(condition.suggested_tasks)}\n\n"
                     "Constraints:\n"
-                    "- 1–4 tasks, strictly necessary and sufficient.\n"
+                    "- 1–3 tasks, each is exec.\n"
+                    "- Final task must directly test the condition's accept vs reject.\n"
                     "- Each task is a single clear action to perform in the repo (no pseudo-DSL).\n"
-                    "- Include a mode for each task: read, stat, py:functions, py:classes, exec.\n"
+                    "- No read/stat/py modes.\n"
                     "- Examples: \"Trace control flow backward from <location> to confirm a permission check exists\", \"List call sites of <fn> and inspect argument validation\", \"Search for uses of <symbol> that bypass <guard>\".\n"
                     "- No external network/tools.\n"
                 ),
@@ -253,13 +254,7 @@ class Orchestrator:
                                     "why": {"type": "string"},
                                     "mode": {
                                         "type": "string",
-                                        "enum": [
-                                            "read",
-                                            "stat",
-                                            "py:functions",
-                                            "py:classes",
-                                            "exec",
-                                        ],
+                                        "enum": ["exec"],
                                     },
                                 },
                                 "required": ["task", "why", "mode"],
@@ -287,25 +282,16 @@ class Orchestrator:
         for t in data.get("tasks", []) or []:
             mode = t.get("mode")
             task_text = t.get("task", "")
-            if not mode or task_text is None:
+            if mode != "exec" or task_text is None:
                 continue
             key = (mode, task_text)
             if key in seen:
                 continue
             seen.add(key)
-            if len(tasks) >= 4:
+            if len(tasks) >= 3:
                 break
             path = code_path.as_posix()
-            if mode == "read":
-                goal = f"read:{path}"
-            elif mode == "stat":
-                goal = f"stat:{path}"
-            elif mode == "py:functions":
-                goal = f"py:functions:{path}"
-            elif mode == "py:classes":
-                goal = f"py:classes:{path}"
-            else:  # exec
-                goal = f"codex:exec:{path}::{task_text}"
+            goal = f"codex:exec:{path}::{task_text}"
             tasks.append(
                 {
                     "task": goal,
@@ -489,14 +475,13 @@ class Orchestrator:
         task_results: List[dict] = []
         for t in tasks:
             goal = t["task"]
-            mode = t.get("mode", "")
+            mode = t.get("mode", "exec")
             original = t.get("original", goal)
             stamp = utc_now_iso()
             goal_hash = hashlib.sha1(goal.encode()).hexdigest()
             try:
                 out = self.agent(goal)
-                if mode == "exec":
-                    condition.evidence.append(json.dumps(out)[:10000])
+                condition.evidence.append(json.dumps(out)[:10000])
                 task_results.append(
                     {
                         "task": goal,

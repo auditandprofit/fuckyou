@@ -13,6 +13,42 @@ def fake_agent(goal: str) -> str:
     return ""
 
 
+def test_generate_tasks_only_exec(monkeypatch):
+    orch = Orchestrator(fake_agent)
+    cond = Condition(description="c", accept="a", reject="r")
+    fake = {
+        "choices": [
+            {
+                "message": {
+                    "function_call": {
+                        "name": "emit_tasks",
+                        "arguments": json.dumps(
+                            {
+                                "tasks": [
+                                    {"task": "t1", "why": "w1", "mode": "read"},
+                                    {"task": "t2", "why": "w2", "mode": "exec"},
+                                ]
+                            }
+                        ),
+                    }
+                }
+            }
+        ]
+    }
+    monkeypatch.setattr(
+        "orchestrator.openai_generate_response", lambda *a, **k: fake
+    )
+    tasks = orch.generate_tasks(cond, Path("p.py"))
+    assert tasks == [
+        {
+            "task": "codex:exec:p.py::t2",
+            "why": "w2",
+            "mode": "exec",
+            "original": "t2",
+        }
+    ]
+
+
 def test_judge_condition_requires_evidence(monkeypatch):
     orch = Orchestrator(fake_agent)
 
@@ -117,6 +153,25 @@ def test_execute_tasks_atomic_write_no_partial_on_error(tmp_path, monkeypatch):
         "provenance": {"path": "examples/example1.py"},
     }
     assert list(tmp_path.iterdir()) == [finding]
+
+
+def test_execute_tasks_updates_evidence(tmp_path):
+    obs = {"type": "exec_observation", "summary": "s", "citations": []}
+    orch = Orchestrator(lambda g: obs)
+    cond = Condition(description="c")
+    finding = tmp_path / "f.json"
+    finding.write_text(
+        json.dumps({"tasks_log": [], "provenance": {"path": "examples/example1.py"}})
+    )
+    tasks = [
+        {
+            "task": "codex:exec:examples/example1.py::x",
+            "mode": "exec",
+            "original": "x",
+        }
+    ]
+    orch._execute_tasks(finding, cond, tasks)
+    assert cond.evidence and json.loads(cond.evidence[0])["summary"] == "s"
 
 
 def test_judgement_shortcuts(monkeypatch):
