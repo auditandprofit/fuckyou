@@ -131,7 +131,7 @@ class LiveTextFormatter:
             self._print_line(base, text)
             self.in_tasks = True
 
-    def _on_tasks_plan(self, tasks: List[str]) -> None:
+    def _on_tasks_plan(self, tasks: List[str], verbs: List[str] | None = None) -> None:
         base = 5 if self.is_tty else 4
         joined = ", ".join(tasks)
         self._print_line(base, f"• plan: {self._truncate(joined, self.width - base - 10)}")
