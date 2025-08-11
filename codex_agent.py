@@ -75,11 +75,21 @@ class CodexAgent:
             )
         if kind == "exec":
             return (
-                "SYSTEM:\nStrict JSON only. Deterministic. No network. No writes. Execute EXACTLY the provided task.\n\n"
+                "SYSTEM:\nStrict JSON only. Deterministic. No network. No writes. Operate in the repo working directory.\n\n"
                 "USER:\n"
-                f"Action: EXEC\nPath: {path}\nTask: {payload}\n\n"
-                "Purpose:\n- Produce structured, reproducible observations that can satisfy or fail a condition.\n\n"
-                "Output JSON:\n{\"type\":\"exec\",\n \"task\":\"<verbatim>\",\n \"result\":{\n   \"observations\": [\n     {\"kind\":\"static|symbolic|pattern|flow|constraint|runtime-stub\",\n      \"detail\":\"<what was found>\",\n      \"path\":\"<repo-rel>\",\n      \"region\":{\"start_line\":<int>,\"end_line\":<int>}\n     }\n   ],\n   \"signals\":{\"accept\":false,\"reject\":false,\"notes\":\"<if both false, explain why inconclusive>\"}\n }}\n"
+                f"Action: EXEC\nPath: {path}\nGoal: {payload}\n\n"
+                "Do the goal using repo-local tools (shell, Python, static reading). Be concise. If you inspect code, include concrete file paths and line spans.\n\n"
+                "Output JSON:\n"
+                "{\"type\":\"exec\",\n"
+                " \"task\":\"<verbatim goal>\",\n"
+                " \"result\":{\n"
+                "   \"type\":\"observe\",\n"
+                "   \"notes\":\"<short summary>\",\n"
+                "   \"observations\":[\n"
+                "     {\"path\":\"<repo-rel>\",\"region\":{\"start_line\":<int>,\"end_line\":<int>},\"detail\":\"<what you found>\"}\n"
+                "   ]\n"
+                " }\n"
+                "}\n"
             )
         action = {
             "read": "READ",

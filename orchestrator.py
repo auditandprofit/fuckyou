@@ -205,7 +205,7 @@ class Orchestrator:
         return None
 
     def generate_tasks(self, condition: Condition, code_path: Path) -> List[dict]:
-        """Generate tasks to gather evidence for ``condition``."""
+        """Generate natural-language tasks to gather evidence for ``condition``."""
         messages = [
             {
                 "role": "system",
@@ -220,10 +220,15 @@ class Orchestrator:
             {
                 "role": "user",
                 "content": (
-                    "Goal: Produce an ordered, minimal task plan to decide this condition.\n\n"
+                    "Goal: Produce an ordered, minimal plan of NATURAL-LANGUAGE tasks that will decide this condition.\n\n"
                     f"Inputs:\n- condition: {{\"desc\":\"{condition.description}\",\"accept\":\"{condition.accept}\",\"reject\":\"{condition.reject}\"}}\n\n"
-                    "Constraints:\n- 1–6 tasks, strictly necessary and sufficient.\n- Each task must be directly runnable via Codex EXEC.\n- No placeholders; specify exact target(s) and method(s).\n- Prefer static checks; use lightweight dynamic checks only if essential.\n\n"
-                    "Output JSON:\n{\"tasks\":[{\n  \"task\":\"<verbatim codex-executable string>\",\n  \"why\":\"<what this task will prove or rule out>\",\n  \"expected_signals\":{\"accept\":\"<signal(s)>\",\"reject\":\"<signal(s)>\"}\n  }]}"
+                    "Constraints:\n"
+                    "- 1–4 tasks, strictly necessary and sufficient.\n"
+                    "- Each task is a single clear action to perform in the repo (no pseudo-DSL).\n"
+                    "- Examples: \"Trace control flow backward from <location> to confirm a permission check exists\", \"List call sites of <fn> and inspect argument validation\", \"Search for uses of <symbol> that bypass <guard>\".\n"
+                    "- No external network/tools.\n\n"
+                    "Output JSON:\n"
+                    "{\"tasks\":[{\"task\":\"<natural language goal>\",\"why\":\"<what this will prove or rule out>\"}]}"
                 ),
             },
         ]
@@ -240,17 +245,9 @@ class Orchestrator:
                                 "type": "object",
                                 "properties": {
                                     "task": {"type": "string"},
-                                    "why": {"type": "string"},
-                                    "expected_signals": {
-                                        "type": "object",
-                                        "properties": {
-                                            "accept": {"type": "string"},
-                                            "reject": {"type": "string"},
-                                        },
-                                        "required": ["accept", "reject"],
-                                    },
+                                    "why": {"type": "string"}
                                 },
-                                "required": ["task", "why", "expected_signals"],
+                                "required": ["task", "why"],
                             },
                         }
                     },
@@ -269,13 +266,12 @@ class Orchestrator:
             temperature=0,
         )
         _, data = openai_parse_function_call(response)
-        tasks = []
+        tasks: List[dict] = []
         for t in data.get("tasks", []) or []:
             tasks.append(
                 {
                     "task": t.get("task", ""),
                     "why": t.get("why", ""),
-                    "expected_signals": t.get("expected_signals", {}),
                     "original": t.get("task", ""),
                 }
             )
