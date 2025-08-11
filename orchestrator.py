@@ -23,7 +23,11 @@ from util.openai import (
 )
 from util.time import utc_now_iso
 
-BANNER = "Deterministic security auditor. No network. No writes. JSON only."
+BANNER = (
+    "Deterministic security auditor. No network. No writes. JSON only. "
+    "You are one stage in a fixed pipeline (discover→derive→plan→exec→judge→narrow). "
+    "Do only this stage. Your JSON is consumed verbatim by the next stage."
+)
 
 
 # ----- Data structures -------------------------------------------------------
@@ -166,6 +170,8 @@ class Orchestrator:
                 "parameters": {
                     "type": "object",
                     "properties": {
+                        "schema_version": {"type": "integer"},
+                        "stage": {"type": "string"},
                         "conditions": {
                             "type": "array",
                             "items": {
@@ -190,7 +196,7 @@ class Orchestrator:
                             },
                         }
                     },
-                    "required": ["conditions"],
+                    "required": ["schema_version", "stage", "conditions"],
                 },
             }
         ]
@@ -250,9 +256,11 @@ class Orchestrator:
                 "content": (
                     "Goal: Produce an ordered, minimal plan of NATURAL-LANGUAGE tasks that will decide this condition.\n\n"
                     f"Inputs:\n- condition: {{\"desc\":\"{condition.description}\",\"accept\":\"{condition.accept}\",\"reject\":\"{condition.reject}\"}}\n- suggested_tasks: {json.dumps(condition.suggested_tasks)}\n- last_observation_summary: {json.dumps(last_sum)}\n\n"
+                    "Codex can: read files, grep/search, parse basic AST, trace call sites/paths, do simple static dataflow, summarize.\n"
+                    "Operation classes = {read-file, search, ast-parse, callgraph, dataflow}.\n\n"
                     "Constraints:\n"
                     "- Emit 1–3 tasks, each is *exec*.\n"
-                    "- If the last observation summary starts with 'error:', avoid proposing the same operation class; choose an alternative read-only check.\n"
+                    "- If the last observation summary starts with 'error:', switch to a different operation class.\n"
                     "- Final task must directly test the condition's ACCEPT vs REJECT.\n"
                     "- Each task is a single clear action to perform in the repository (no pseudo-DSL).\n"
                     "- Use plain English; do not mention internal mode names.\n"
@@ -268,6 +276,8 @@ class Orchestrator:
                 "parameters": {
                     "type": "object",
                     "properties": {
+                        "schema_version": {"type": "integer"},
+                        "stage": {"type": "string"},
                         "tasks": {
                             "type": "array",
                             "items": {
@@ -284,7 +294,7 @@ class Orchestrator:
                             },
                         }
                     },
-                    "required": ["tasks"],
+                    "required": ["schema_version", "stage", "tasks"],
                 },
             }
         ]
@@ -334,8 +344,18 @@ class Orchestrator:
         if not condition.evidence:
             return "unknown"
         latest_ok = _latest_success(condition.evidence)
+        latest_idx = None
+        if latest_ok is not None:
+            for i, raw in reversed(list(enumerate(condition.evidence))):
+                try:
+                    if json.loads(raw) == latest_ok:
+                        latest_idx = i
+                        break
+                except Exception:
+                    continue
         try:
             obs = latest_ok or json.loads(condition.evidence[-1])
+            idx = latest_idx if latest_ok is not None and latest_idx is not None else len(condition.evidence) - 1
         except Exception:
             condition.rationale = "latest observation not valid JSON"
             return "unknown"
@@ -349,11 +369,19 @@ class Orchestrator:
         if missing:
             condition.rationale = f"missing {' & '.join(missing)}"
             return "unknown"
+        prev_summaries = []
+        for raw in condition.evidence[max(0, idx - 2): idx]:
+            try:
+                s = json.loads(raw).get("summary")
+                if isinstance(s, str):
+                    prev_summaries.append(s)
+            except Exception:
+                continue
         messages = [
             {
                 "role": "system",
                 "content": (
-                    f"{BANNER}\nSTAGE: judge\n\nDecide using the latest successful observation; if none, return unknown with the single most decisive evidence needed."
+                    f"{BANNER}\nSTAGE: judge\n\nPrefer the latest successful observation; if it conflicts with any earlier success, return failed and explain. If unknown, state the single decisive evidence needed. evidence_refs index the provided citations (0-based)."
                 ),
             },
             {
@@ -364,6 +392,7 @@ class Orchestrator:
                     f"REJECT IF: {condition.reject}\n"
                     f"Summary: {summary}\n"
                     f"Citations: {json.dumps(citations)}\n"
+                    f"PrevSummaries: {json.dumps(prev_summaries)}\n"
                 ),
             },
         ]
@@ -374,11 +403,13 @@ class Orchestrator:
                 "parameters": {
                     "type": "object",
                     "properties": {
+                        "schema_version": {"type": "integer"},
+                        "stage": {"type": "string"},
                         "state": {"type": "string", "enum": ["satisfied", "failed", "unknown"]},
                         "rationale": {"type": "string"},
                         "evidence_refs": {"type": "array", "items": {"type": "integer"}},
                     },
-                    "required": ["state", "rationale", "evidence_refs"],
+                    "required": ["schema_version", "stage", "state", "rationale", "evidence_refs"],
                 },
             }
         ]
@@ -438,6 +469,8 @@ class Orchestrator:
                 "parameters": {
                     "type": "object",
                     "properties": {
+                        "schema_version": {"type": "integer"},
+                        "stage": {"type": "string"},
                         "conditions": {
                             "type": "array",
                             "items": {
@@ -462,7 +495,7 @@ class Orchestrator:
                             },
                         }
                     },
-                    "required": ["conditions"],
+                    "required": ["schema_version", "stage", "conditions"],
                 },
             }
         ]

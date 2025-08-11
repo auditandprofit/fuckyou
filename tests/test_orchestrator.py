@@ -24,6 +24,8 @@ def test_generate_tasks_only_exec(monkeypatch):
                         "name": "emit_tasks",
                         "arguments": json.dumps(
                             {
+                                "schema_version": 1,
+                                "stage": "plan",
                                 "tasks": [
                                     {"task": "t1", "why": "w1", "mode": "read"},
                                     {"task": "t2", "why": "w2", "mode": "exec"},
@@ -156,7 +158,13 @@ def test_execute_tasks_atomic_write_no_partial_on_error(tmp_path, monkeypatch):
 
 
 def test_execute_tasks_updates_evidence(tmp_path):
-    obs = {"type": "exec_observation", "summary": "s", "citations": []}
+    obs = {
+        "schema_version": 1,
+        "stage": "exec",
+        "summary": "s",
+        "citations": [],
+        "notes": "",
+    }
     orch = Orchestrator(lambda g: obs)
     cond = Condition(description="c")
     finding = tmp_path / "f.json"
@@ -184,6 +192,8 @@ def test_judgement_shortcuts(monkeypatch):
                         "name": "judge_condition",
                         "arguments": json.dumps(
                             {
+                                "schema_version": 1,
+                                "stage": "judge",
                                 "state": "satisfied",
                                 "rationale": "ok",
                                 "evidence_refs": [-1],
@@ -197,5 +207,18 @@ def test_judgement_shortcuts(monkeypatch):
     monkeypatch.setattr(
         "orchestrator.openai_generate_response", lambda *a, **k: fake
     )
-    cond = Condition(description="x", evidence=[json.dumps({"type": "exec_observation", "summary": "s", "citations": []})])
+    cond = Condition(
+        description="x",
+        evidence=[
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "stage": "exec",
+                    "summary": "s",
+                    "citations": [],
+                    "notes": "",
+                }
+            )
+        ],
+    )
     assert orch.judge_condition(cond) == "satisfied"

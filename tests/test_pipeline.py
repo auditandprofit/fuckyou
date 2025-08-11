@@ -38,9 +38,9 @@ def clean_env(tmp_path, monkeypatch):
         "m = re.search(r'Path: (.*)', prompt)\n"
         "path = m.group(1).strip() if m else ''\n"
         "if 'Action: DISCOVER' in prompt:\n"
-        "    out = {\"type\":\"discover\",\"claim\":f'Review {path}',\"files\":[path],\"evidence\":{}}\n"
+        "    out = {\"schema_version\":1,\"stage\":\"discover\",\"claim\":f'Review {path}',\"files\":[path],\"evidence\":{}}\n"
         "elif 'Action: EXEC' in prompt:\n"
-        "    out = {\"type\":\"exec_observation\",\"summary\":\"ok\",\"citations\":[]}\n"
+        "    out = {\"schema_version\":1,\"stage\":\"exec\",\"summary\":\"ok\",\"citations\":[],\"notes\":\"\"}\n"
         "else:\n"
         "    out = {\"error\":\"unknown\"}\n"
         "open(out_path, 'w').write(json.dumps(out))\n"
@@ -58,12 +58,12 @@ def run_pipeline(monkeypatch, llm_stub=None, args=None) -> SimpleNamespace:
     import run_pipeline as rp
 
     if llm_stub is None:
-        llm_stub = lambda *a, **k: {
+            llm_stub = lambda *a, **k: {
             "output": [
                 {
                     "type": "tool_call",
                     "name": "emit_conditions",
-                    "arguments": "{\"conditions\": []}",
+                    "arguments": "{\"schema_version\":1,\"stage\":\"derive\",\"conditions\": []}",
                 }
             ]
         }
@@ -193,13 +193,13 @@ def test_manifest_is_single_source(monkeypatch):
     monkeypatch.setattr(
         "orchestrator.openai_generate_response",
         lambda *a, **k: {
-            "output": [
-                {
-                    "type": "tool_call",
-                    "name": "emit_conditions",
-                    "arguments": "{\"conditions\": []}",
-                }
-            ]
+        "output": [
+            {
+                "type": "tool_call",
+                "name": "emit_conditions",
+                "arguments": "{\"schema_version\":1,\"stage\":\"derive\",\"conditions\": []}",
+            }
+        ]
         },
     )
     rp.main()

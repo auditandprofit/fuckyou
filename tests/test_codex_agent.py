@@ -37,14 +37,26 @@ def _agent_with_result(data):
     workdir = str(Path(__file__).resolve().parents[1])
     return CodexAgent(client, workdir=workdir)
 def test_discover():
-    data = {"type": "discover", "claim": "c", "files": ["p"], "evidence": {}}
+    data = {
+        "schema_version": 1,
+        "stage": "discover",
+        "claim": "c",
+        "files": ["p"],
+        "evidence": {},
+    }
     agent = _agent_with_result(data)
     res = agent.run("codex:discover:p")
     assert res == data
 
 
 def test_exec():
-    data = {"type": "exec_observation", "summary": "ok", "citations": []}
+    data = {
+        "schema_version": 1,
+        "stage": "exec",
+        "summary": "ok",
+        "citations": [],
+        "notes": "",
+    }
     agent = _agent_with_result(data)
     res = agent.run("codex:exec:p::stat:p")
     assert res == data
