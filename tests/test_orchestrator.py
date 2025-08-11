@@ -221,3 +221,28 @@ def test_judgement_shortcuts(monkeypatch):
         ],
     )
     assert orch.judge_condition(cond) == "satisfied"
+
+
+def test_gather_initial_findings_requires_highlights():
+    """Discover results without highlights should be skipped."""
+    orch = Orchestrator(lambda goal: {"schema_version": 1, "stage": "discover", "claim": "c", "files": ["f"], "evidence": {"highlights": []}})
+    files = [Path("f")]
+    source_map = {"f": "manual"}
+    assert orch.gather_initial_findings(files, source_map) == []
+
+
+def test_verdict_false_positive_precedence(tmp_path, monkeypatch):
+    orch = Orchestrator(fake_agent)
+    cond1 = Condition(description="a", state="satisfied")
+    cond2 = Condition(description="b", state="failed")
+
+    def fake_derive(finding):
+        return [cond1, cond2]
+
+    monkeypatch.setattr(orch, "derive_conditions", fake_derive)
+    monkeypatch.setattr(orch, "resolve_condition", lambda *a, **k: None)
+    finding_file = tmp_path / "finding_x.json"
+    finding_file.write_text(json.dumps({"claim": "c", "tasks_log": [], "provenance": {"path": "p"}, "seed_source": "manual"}))
+    orch.process_findings(tmp_path, max_steps=0)
+    data = json.loads(finding_file.read_text())
+    assert data["verdict"]["state"] == "FALSE_POSITIVE"

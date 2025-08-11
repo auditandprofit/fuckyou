@@ -11,7 +11,7 @@ import shutil
 import time
 import inspect
 
-from codex_dispatch import CodexClient
+from codex_dispatch import CodexClient, CodexNotFound
 from codex_agent import CodexAgent
 from orchestrator import Orchestrator
 from util.reporter import Reporter
@@ -190,8 +190,16 @@ def main(argv: list[str] | None = None) -> None:
     counts = run_data["counts"]
     counts["manifest_files"] = len(manifest_files)
 
-    codex = CodexClient(forward_streams=not reporter.enabled)
-    codex_agent = CodexAgent(codex, workdir=str(repo_root))
+    try:
+        codex = CodexClient(forward_streams=not reporter.enabled)
+        codex_agent = CodexAgent(codex, workdir=str(repo_root))
+    except CodexNotFound as exc:
+        logger.error("codex binary not found: %s", exc)
+        counts["errors"] += 1
+        run_data["finished_at"] = utc_now_iso()
+        write_run_json(run_path, run_data)
+        reporter.log("run:error", error="codex-not-found")
+        raise SystemExit(1)
     orch = Orchestrator(codex_agent.run, reporter=reporter)
 
     try:

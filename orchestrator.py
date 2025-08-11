@@ -187,18 +187,19 @@ class Orchestrator:
                 self.logger.info(
                     "Discovered %s::%s", code_path.as_posix(), lens
                 )
-                if isinstance(data, str):
-                    claim, files, evidence = data.strip(), [code_path.as_posix()], {}
-                elif isinstance(data, dict):
-                    claim = data.get("claim") or f"Review {code_path.as_posix()}"
-                    files = data.get("files") or [code_path.as_posix()]
-                    evidence = data.get("evidence", {})
-                else:
-                    claim, files, evidence = (
-                        f"Review {code_path.as_posix()}",
-                        [code_path.as_posix()],
-                        {},
+                if not (
+                    isinstance(data, dict)
+                    and data.get("schema_version") == 1
+                    and data.get("stage") == "discover"
+                    and ((data.get("evidence") or {}).get("highlights"))
+                ):
+                    self.logger.warning(
+                        "Skipping %s::%s due to invalid discover result", code_path.as_posix(), lens
                     )
+                    continue
+                claim = data.get("claim") or f"Review {code_path.as_posix()}"
+                files = data.get("files") or [code_path.as_posix()]
+                evidence = data.get("evidence", {})
                 key = (
                     (claim or "").strip().lower(),
                     (files or [code_path.as_posix()])[0],
@@ -823,15 +824,15 @@ class Orchestrator:
             finding["tasks_log"] = updated.get("tasks_log", [])
             finding["conditions"] = [c.to_dict() for c in conditions]
             states = {c.state for c in conditions}
-            if states and states == {"satisfied"}:
-                finding["verdict"] = {
-                    "state": "TRUE_POSITIVE",
-                    "reason": "all conditions satisfied",
-                }
-            elif states and "satisfied" not in states and "failed" in states:
+            if states and "failed" in states:
                 finding["verdict"] = {
                     "state": "FALSE_POSITIVE",
                     "reason": "at least one condition failed",
+                }
+            elif states and states == {"satisfied"}:
+                finding["verdict"] = {
+                    "state": "TRUE_POSITIVE",
+                    "reason": "all conditions satisfied",
                 }
             else:
                 finding["verdict"] = {
