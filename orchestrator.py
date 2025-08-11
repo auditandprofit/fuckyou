@@ -14,7 +14,6 @@ import hashlib
 import json
 import logging
 import os
-import re
 import time
 
 from util.io import atomic_write
@@ -91,7 +90,7 @@ class Orchestrator:
 
     # -- Seed input -----------------------------------------------------------
     def gather_initial_findings(
-        self, manifest_files: List[Path], _prompt_prefix: str
+        self, manifest_files: List[Path]
     ) -> List[Dict]:
         findings: List[Dict] = []
         for code_path in manifest_files:
@@ -140,8 +139,7 @@ class Orchestrator:
                     f"Goal: Break down the bug claim into minimal, testable security CONDITIONS that, if individually decided, collectively allow a final verdict (TRUE POSITIVE / FALSE POSITIVE).\n\n"
                     f"Inputs:\n- claim: \"{claim}\"\n- related_files: {json.dumps(related_files)}\n\n"
                     "Mindset:\n- Act as a FALSE-POSITIVE filter: add decisive checks that would invalidate the claim (e.g., input not user-controlled; guard exists on all paths; sanitization before sink).\n- Prefer objective, repo-local observations.\n\n"
-                    "Constraints:\n- 1–5 conditions.\n- Each condition must be objectively checkable via codex-executable tasks.\n- Each condition must state an acceptance criterion tied to the final verdict.\n\n"
-                    "Output JSON:\n{\"conditions\":[\n  {\n    \\\"desc\\\":\\\"<short, testable statement>\\\",\\n    \\\"why\\\":\\\"<why this condition matters to verifying/refuting the claim>\\\",\\n    \\\"accept\\\":\\\"<what observation(s) would satisfy>\\\",\\n    \\\"reject\\\":\\\"<what observation(s) would fail>\\\",\\n    \\\"suggested_tasks\\\":[\\\"<exec-able task string>\\\", \\\"...\\\"]\\n  }\n]}\n"
+                    "Constraints:\n- 1–5 conditions.\n- Each condition must be objectively checkable via codex-executable tasks.\n- Each condition must state an acceptance criterion tied to the final verdict.\n"
                 ),
             },
         ]
@@ -210,26 +208,9 @@ class Orchestrator:
             )
         return conds
 
-    def _normalize_task(self, text: str, code_path: Path) -> str | None:
-        t = text.lower()
-        path = code_path.as_posix()
-        if re.search(r"stat|exists", t):
-            return f"stat:{path}"
-        if code_path.suffix == ".py":
-            if re.search(r"functions|parse|syntax", t):
-                return f"py:functions:{path}"
-            if "class" in t:
-                return f"py:classes:{path}"
-        if "read" in t:
-            return f"read:{path}"
-        return None
-
     def generate_tasks(self, condition: Condition, code_path: Path) -> List[dict]:
         """Generate tasks to gather evidence for ``condition``."""
         tasks: List[dict] = []
-        for t in condition.suggested_tasks:
-            norm = self._normalize_task(t, code_path)
-            tasks.append({"task": norm if norm else t, "original": t})
         messages = [
             {
                 "role": "system",
@@ -250,10 +231,9 @@ class Orchestrator:
                     "Constraints:\n"
                     "- 1–4 tasks, strictly necessary and sufficient.\n"
                     "- Each task is a single clear action to perform in the repo (no pseudo-DSL).\n"
+                    "- Include a mode for each task: read, stat, py:functions, py:classes, exec.\n"
                     "- Examples: \"Trace control flow backward from <location> to confirm a permission check exists\", \"List call sites of <fn> and inspect argument validation\", \"Search for uses of <symbol> that bypass <guard>\".\n"
-                    "- No external network/tools.\n\n"
-                    "Output JSON:\n"
-                    "{\"tasks\":[{\"task\":\"<natural language goal>\",\"why\":\"<what this will prove or rule out>\"}]}"
+                    "- No external network/tools.\n"
                 ),
             },
         ]
@@ -270,9 +250,19 @@ class Orchestrator:
                                 "type": "object",
                                 "properties": {
                                     "task": {"type": "string"},
-                                    "why": {"type": "string"}
+                                    "why": {"type": "string"},
+                                    "mode": {
+                                        "type": "string",
+                                        "enum": [
+                                            "read",
+                                            "stat",
+                                            "py:functions",
+                                            "py:classes",
+                                            "exec",
+                                        ],
+                                    },
                                 },
-                                "required": ["task", "why"],
+                                "required": ["task", "why", "mode"],
                             },
                         }
                     },
@@ -293,13 +283,37 @@ class Orchestrator:
             temperature=0,
         )
         _, data = openai_parse_function_call(response)
+        seen = set()
         for t in data.get("tasks", []) or []:
-            norm = self._normalize_task(t.get("task", ""), code_path)
-            tasks.append({
-                "task": norm if norm else t.get("task", ""),
-                "why": t.get("why", ""),
-                "original": t.get("task", ""),
-            })
+            mode = t.get("mode")
+            task_text = t.get("task", "")
+            if not mode or task_text is None:
+                continue
+            key = (mode, task_text)
+            if key in seen:
+                continue
+            seen.add(key)
+            if len(tasks) >= 4:
+                break
+            path = code_path.as_posix()
+            if mode == "read":
+                goal = f"read:{path}"
+            elif mode == "stat":
+                goal = f"stat:{path}"
+            elif mode == "py:functions":
+                goal = f"py:functions:{path}"
+            elif mode == "py:classes":
+                goal = f"py:classes:{path}"
+            else:  # exec
+                goal = f"codex:exec:{path}::{task_text}"
+            tasks.append(
+                {
+                    "task": goal,
+                    "why": t.get("why", ""),
+                    "mode": mode,
+                    "original": task_text,
+                }
+            )
         if self.reporter:
             self.reporter.log(
                 "tasks:plan", tasks=[t.get("task", "") for t in tasks]
@@ -338,8 +352,7 @@ class Orchestrator:
                 "content": (
                     f"Condition: \"{condition.description}\"\n"
                     f"Summary: {summary}\n"
-                    f"Citations: {json.dumps(citations)}\n\n"
-                    "Output JSON: {\"state\":\"satisfied|failed|unknown\",\"rationale\":\"<short>\",\"evidence_refs\":[-1]}"
+                    f"Citations: {json.dumps(citations)}\n"
                 ),
             },
         ]
@@ -397,7 +410,7 @@ class Orchestrator:
                 "content": (
                     "Goal: Replace uncertainty with decisive subconditions that will lead to a verdict.\n\n"
                     f"Inputs:\n- parent_condition: \"{condition.description}\"\n- blocking_uncertainty: \"{blocking}\"\n- last_evidence: {last_ev}\n\n"
-                    "Constraints:\n- 1–3 subconditions, each mapping to at least one executable task.\n- Make them mutually informative (no overlap).\n\nOutput JSON:\n{\"conditions\":[{\n  \"desc\":\"<testable discriminator>\",\n  \"why\":\"<how it resolves the uncertainty>\",\n  \"accept\":\"<...>\",\n  \"reject\":\"<...>\",\n  \"suggested_tasks\":[\"<exec-able task>\", \"...\"]\n}]}"
+                    "Constraints:\n- 1–3 subconditions, each mapping to at least one executable task.\n- Make them mutually informative (no overlap)."
                 ),
             },
         ]
@@ -473,22 +486,21 @@ class Orchestrator:
         """Execute tasks via agent and persist a task log blob."""
         with open(finding_file) as fh:
             finding = json.load(fh)
-        code_path = finding.get("provenance", {}).get("path", "")
         task_results: List[dict] = []
         for t in tasks:
             goal = t["task"]
+            mode = t.get("mode", "")
             original = t.get("original", goal)
             stamp = utc_now_iso()
             goal_hash = hashlib.sha1(goal.encode()).hexdigest()
             try:
-                if goal.startswith(("read:", "stat:", "py:functions:", "py:classes:")):
-                    out = self.agent(goal)
-                else:
-                    out = self.agent(f"codex:exec:{code_path}::{goal}")
+                out = self.agent(goal)
+                if mode == "exec":
                     condition.evidence.append(json.dumps(out)[:10000])
                 task_results.append(
                     {
                         "task": goal,
+                        "mode": mode,
                         "original": original,
                         "output": out,
                         "timestamp": stamp,
@@ -499,6 +511,7 @@ class Orchestrator:
                 task_results.append(
                     {
                         "task": goal,
+                        "mode": mode,
                         "original": original,
                         "error": str(exc),
                         "timestamp": stamp,

@@ -21,7 +21,6 @@ from util.io import atomic_write
 from util.manifest import validate_manifest
 import util.openai as openai
 
-PROMPT_PREFIX = "Analyze file: "
 VERSION = "0.1"
 
 
@@ -33,7 +32,6 @@ def parse_args(argv: list[str] | None = None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--manifest", default="manifest.txt")
     ap.add_argument("--findings-dir", default="findings")
-    ap.add_argument("--prompt-prefix", default=PROMPT_PREFIX)
     ap.add_argument("--version", default=VERSION)
     ap.add_argument("--repo-root", default=str(paths.REPO_ROOT))
     ap.add_argument("--model", default=openai.DEFAULT_MODEL)
@@ -135,7 +133,6 @@ def main(argv: list[str] | None = None) -> None:
     run_data = {
         "run_id": run_id,
         "manifest_path": str(manifest_path),
-        "prompt_prefix": args.prompt_prefix,
         "started_at": utc_now_iso(),
         "finished_at": None,
         "counts": {"manifest_files": 0, "findings_written": 0, "errors": 0},
@@ -158,7 +155,7 @@ def main(argv: list[str] | None = None) -> None:
     orch = Orchestrator(codex_agent.run, reporter=reporter)
 
     try:
-        initial = orch.gather_initial_findings(manifest_files, args.prompt_prefix)
+        initial = orch.gather_initial_findings(manifest_files)
     except Exception as exc:  # pragma: no cover - unexpected
         logger.error("initial gathering failed: %s", exc)
         initial = []
