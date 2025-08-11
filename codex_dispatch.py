@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from typing import Mapping, Optional, Sequence
@@ -68,7 +69,12 @@ class CodexClient:
     ) -> CodexExecResult:
         """Execute codex with the given prompt and return the result."""
 
-        cmd = [self.bin_path, *(extra_flags or [])]
+        cmd = [
+            self.bin_path,
+            "--skip-git-repo-check",
+            "--dangerously-bypass-approvals-and-sandbox",
+            *(extra_flags or []),
+        ]
         env = os.environ.copy()
         env.update(self.default_env)
 
@@ -81,25 +87,54 @@ class CodexClient:
                 ctx = self.semaphore
             with ctx:
                 start = time.time()
+                stdout_buf: list[str] = []
+                stderr_buf: list[str] = []
                 try:
-                    proc = subprocess.run(
+                    proc = subprocess.Popen(
                         cmd,
-                        input=prompt.encode(),
+                        stdin=subprocess.PIPE,
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
                         cwd=workdir,
-                        timeout=timeout,
                         env=env,
+                        text=True,
                     )
+                    assert proc.stdin is not None
+                    proc.stdin.write(prompt)
+                    proc.stdin.close()
+
+                    def _forward(src, dst, buf):
+                        for line in src:
+                            buf.append(line)
+                            dst.write(line)
+                            dst.flush()
+
+                    assert proc.stdout is not None
+                    assert proc.stderr is not None
+                    th_out = threading.Thread(
+                        target=_forward, args=(proc.stdout, sys.stdout, stdout_buf)
+                    )
+                    th_err = threading.Thread(
+                        target=_forward, args=(proc.stderr, sys.stderr, stderr_buf)
+                    )
+                    th_out.start()
+                    th_err.start()
+                    proc.wait(timeout=timeout)
+                    th_out.join()
+                    th_err.join()
                 except subprocess.TimeoutExpired as exc:
+                    proc.kill()
+                    proc.wait()
+                    th_out.join()
+                    th_err.join()
                     if attempt > self.retries:
                         raise CodexTimeout(str(exc)) from exc
                     time.sleep(self.backoff_base ** attempt)
                     continue
             duration = time.time() - start
             result = CodexExecResult(
-                stdout=proc.stdout.decode(),
-                stderr=proc.stderr.decode(),
+                stdout="".join(stdout_buf),
+                stderr="".join(stderr_buf),
                 returncode=proc.returncode,
                 duration_sec=duration,
                 cmd=cmd,
