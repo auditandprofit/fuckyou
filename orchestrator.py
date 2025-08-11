@@ -109,6 +109,7 @@ class Orchestrator:
     def derive_conditions(self, finding: Dict) -> List[Condition]:
         """Use the LLM to deterministically derive conditions."""
         claim = finding.get("claim", "")
+        related_files = finding.get("files", [])
         messages = [
             {
                 "role": "system",
@@ -128,9 +129,10 @@ class Orchestrator:
                 "role": "user",
                 "content": (
                     f"Goal: Break down the bug claim into minimal, testable security CONDITIONS that, if individually decided, collectively allow a final verdict (TRUE POSITIVE / FALSE POSITIVE).\n\n"
-                    f"Inputs:\n- claim: \"{claim}\"\n\n"
+                    f"Inputs:\n- claim: \"{claim}\"\n- related_files: {json.dumps(related_files)}\n\n"
+                    "Mindset:\n- Act as a FALSE-POSITIVE filter: add decisive checks that would invalidate the claim (e.g., input not user-controlled; guard exists on all paths; sanitization before sink).\n- Prefer objective, repo-local observations.\n\n"
                     "Constraints:\n- 1–5 conditions.\n- Each condition must be objectively checkable via codex-executable tasks.\n- Each condition must state an acceptance criterion tied to the final verdict.\n\n"
-                    "Output JSON:\n{\"conditions\":[\n  {\n    \\\"desc\\\":\\\"<short, testable statement>\\\",\\n    \\\"why\\\":\\\"<why this condition matters to verifying/refuting the claim>\\\",\\n    \\\"accept\\\":\\\"<what observation(s) would satisfy>\\\",\\n    \\\"reject\\\":\\\"<what observation(s) would fail>\\\",\\n    \\\"suggested_tasks\\\":[\\\"<exec-able task string>\\\", \\\"...\\\"]\\n  }\\n]]}\\n"
+                    "Output JSON:\n{\"conditions\":[\n  {\n    \\\"desc\\\":\\\"<short, testable statement>\\\",\\n    \\\"why\\\":\\\"<why this condition matters to verifying/refuting the claim>\\\",\\n    \\\"accept\\\":\\\"<what observation(s) would satisfy>\\\",\\n    \\\"reject\\\":\\\"<what observation(s) would fail>\\\",\\n    \\\"suggested_tasks\\\":[\\\"<exec-able task string>\\\", \\\"...\\\"]\\n  }\n]}\n"
                 ),
             },
         ]
