@@ -55,12 +55,13 @@ def invoke_codex(
     timeout: float = 60.0,
     extra_flags: Sequence[str] | None = None,
 ):
-    """Run codex in exec mode and return the last assistant message.
+    """Run codex in exec mode and return the parsed last assistant message.
 
-    ``codex`` will write its final assistant message to ``output_path`` which
-    is then read, stripped of optional Markdown fences, and returned as a
-    string.  If the message parses as JSON, the parsed object is returned,
-    otherwise the raw string is wrapped in ``{"raw": ...}``.
+    ``codex`` writes its final assistant message to ``output_path``.  The
+    message is read, stripped of optional Markdown fences, and returned as a
+    parsed JSON object.  If the content cannot be parsed as JSON, a
+    ``json.JSONDecodeError`` is raised to allow callers to fail closed on
+    formatting errors.
     """
 
     cmd = [
@@ -86,4 +87,4 @@ def invoke_codex(
     try:
         return json.loads(last)
     except json.JSONDecodeError:
-        return {"raw": last}
+        raise

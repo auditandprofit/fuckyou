@@ -24,6 +24,8 @@ from util.openai import (
 )
 from util.time import utc_now_iso
 
+BANNER = "Deterministic security auditor. No network. No writes. JSON only."
+
 
 # ----- Data structures -------------------------------------------------------
 
@@ -120,6 +122,7 @@ class Orchestrator:
             {
                 "role": "system",
                 "content": (
+                    f"{BANNER}\nSTAGE: derive\n\n"
                     "You are a security-auditing assistant. Your sole objective is to "
                     "ADJUDICATE a specific bug claim as TRUE POSITIVE or FALSE POSITIVE "
                     "with defensible, testable evidence. Maintain determinism "
@@ -222,11 +225,16 @@ class Orchestrator:
         return None
 
     def generate_tasks(self, condition: Condition, code_path: Path) -> List[dict]:
-        """Generate natural-language tasks to gather evidence for ``condition``."""
+        """Generate tasks to gather evidence for ``condition``."""
+        tasks: List[dict] = []
+        for t in condition.suggested_tasks:
+            norm = self._normalize_task(t, code_path)
+            tasks.append({"task": norm if norm else t, "original": t})
         messages = [
             {
                 "role": "system",
                 "content": (
+                    f"{BANNER}\nSTAGE: plan\n\n"
                     "You are a security-auditing assistant. Your sole objective is to "
                     "ADJUDICATE a specific bug claim as TRUE POSITIVE or FALSE POSITIVE "
                     "with defensible, testable evidence. Maintain determinism (temperature=0). "
@@ -238,7 +246,7 @@ class Orchestrator:
                 "role": "user",
                 "content": (
                     "Goal: Produce an ordered, minimal plan of NATURAL-LANGUAGE tasks that will decide this condition.\n\n"
-                    f"Inputs:\n- condition: {{\"desc\":\"{condition.description}\",\"accept\":\"{condition.accept}\",\"reject\":\"{condition.reject}\"}}\n\n"
+                    f"Inputs:\n- condition: {{\"desc\":\"{condition.description}\",\"accept\":\"{condition.accept}\",\"reject\":\"{condition.reject}\"}}\n- suggested_tasks: {json.dumps(condition.suggested_tasks)}\n\n"
                     "Constraints:\n"
                     "- 1–4 tasks, strictly necessary and sufficient.\n"
                     "- Each task is a single clear action to perform in the repo (no pseudo-DSL).\n"
@@ -285,15 +293,13 @@ class Orchestrator:
             temperature=0,
         )
         _, data = openai_parse_function_call(response)
-        tasks: List[dict] = []
         for t in data.get("tasks", []) or []:
-            tasks.append(
-                {
-                    "task": t.get("task", ""),
-                    "why": t.get("why", ""),
-                    "original": t.get("task", ""),
-                }
-            )
+            norm = self._normalize_task(t.get("task", ""), code_path)
+            tasks.append({
+                "task": norm if norm else t.get("task", ""),
+                "why": t.get("why", ""),
+                "original": t.get("task", ""),
+            })
         if self.reporter:
             self.reporter.log(
                 "tasks:plan", tasks=[t.get("task", "") for t in tasks]
@@ -304,20 +310,35 @@ class Orchestrator:
         """Deterministically judge ``condition`` based on available evidence."""
         if not condition.evidence:
             return "unknown"
-        latest = condition.evidence[-1]
+        latest_raw = condition.evidence[-1]
+        try:
+            obs = json.loads(latest_raw)
+        except Exception:
+            condition.rationale = "latest observation not valid JSON"
+            return "unknown"
+        summary = obs.get("summary")
+        citations = obs.get("citations")
+        missing = []
+        if summary is None:
+            missing.append("summary")
+        if citations is None:
+            missing.append("citations")
+        if missing:
+            condition.rationale = f"missing {' & '.join(missing)}"
+            return "unknown"
         messages = [
             {
                 "role": "system",
                 "content": (
-                    "You are a deterministic security adjudicator. Strict JSON only."
+                    f"{BANNER}\nSTAGE: judge\n\nDecide condition state from the latest observation only."
                 ),
             },
             {
                 "role": "user",
                 "content": (
-                    "Decide this condition from the latest evidence only.\n"
-                    f"- condition: \"{condition.description}\"\n"
-                    f"- evidence:\n{latest}\n\n"
+                    f"Condition: \"{condition.description}\"\n"
+                    f"Summary: {summary}\n"
+                    f"Citations: {json.dumps(citations)}\n\n"
                     "Output JSON: {\"state\":\"satisfied|failed|unknown\",\"rationale\":\"<short>\",\"evidence_refs\":[-1]}"
                 ),
             },
@@ -363,6 +384,7 @@ class Orchestrator:
             {
                 "role": "system",
                 "content": (
+                    f"{BANNER}\nSTAGE: narrow\n\n"
                     "You are a security-auditing assistant. Your sole objective is to "
                     "ADJUDICATE a specific bug claim as TRUE POSITIVE or FALSE POSITIVE "
                     "with defensible, testable evidence. Maintain determinism (temperature=0). "
@@ -459,7 +481,11 @@ class Orchestrator:
             stamp = utc_now_iso()
             goal_hash = hashlib.sha1(goal.encode()).hexdigest()
             try:
-                out = self.agent(f"codex:exec:{code_path}::{goal}")
+                if goal.startswith(("read:", "stat:", "py:functions:", "py:classes:")):
+                    out = self.agent(goal)
+                else:
+                    out = self.agent(f"codex:exec:{code_path}::{goal}")
+                    condition.evidence.append(json.dumps(out)[:10000])
                 task_results.append(
                     {
                         "task": goal,
@@ -469,10 +495,6 @@ class Orchestrator:
                         "input_sha1": goal_hash,
                     }
                 )
-                if isinstance(out, str):
-                    condition.evidence.append(out[:10000])
-                else:
-                    condition.evidence.append(json.dumps(out)[:10000])
             except Exception as exc:
                 task_results.append(
                     {
@@ -555,6 +577,22 @@ class Orchestrator:
                 updated = json.load(fh)
             finding["tasks_log"] = updated.get("tasks_log", [])
             finding["conditions"] = [c.to_dict() for c in conditions]
+            states = {c.state for c in conditions}
+            if states and states == {"satisfied"}:
+                finding["verdict"] = {
+                    "state": "TRUE_POSITIVE",
+                    "reason": "all conditions satisfied",
+                }
+            elif states and "satisfied" not in states and "failed" in states:
+                finding["verdict"] = {
+                    "state": "FALSE_POSITIVE",
+                    "reason": "at least one condition failed",
+                }
+            else:
+                finding["verdict"] = {
+                    "state": "UNKNOWN",
+                    "reason": "conditions unresolved",
+                }
             atomic_write(finding_file, json.dumps(finding, indent=2).encode())
             if self.reporter:
                 self.reporter.log("finding:complete")

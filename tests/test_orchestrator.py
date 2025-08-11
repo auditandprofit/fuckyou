@@ -142,5 +142,5 @@ def test_judgement_shortcuts(monkeypatch):
     monkeypatch.setattr(
         "orchestrator.openai_generate_response", lambda *a, **k: fake
     )
-    cond = Condition(description="x", evidence=["e"])
+    cond = Condition(description="x", evidence=[json.dumps({"type": "exec_observation", "summary": "s", "citations": []})])
     assert orch.judge_condition(cond) == "satisfied"
