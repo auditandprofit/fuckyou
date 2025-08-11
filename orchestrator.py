@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from util.io import atomic_write
 from util.openai import (
@@ -76,6 +77,10 @@ def _latest_success(ev_list):
     return None
 
 
+def _verb(s: str) -> str:
+    return (s.split(None, 1)[0] or "").lower()
+
+
 # ----- Orchestrator ----------------------------------------------------------
 
 class Orchestrator:
@@ -110,24 +115,40 @@ class Orchestrator:
     def gather_initial_findings(
         self, manifest_files: List[Path]
     ) -> List[Dict]:
+        VARIANTS = ["", "deser", "authz", "path", "exec"]
         findings: List[Dict] = []
+        seen: set[tuple[str, str]] = set()
         for code_path in manifest_files:
-            self.logger.info("Discovering %s", code_path.as_posix())
-            data = self.agent(f"codex:discover:{code_path.as_posix()}")
-            self.logger.info("Discovered %s", code_path.as_posix())
-            if isinstance(data, str):
-                claim, files, evidence = data.strip(), [code_path.as_posix()], {}
-            elif isinstance(data, dict):
-                claim = data.get("claim") or f"Review {code_path.as_posix()}"
-                files = data.get("files") or [code_path.as_posix()]
-                evidence = data.get("evidence", {})
-            else:
-                claim, files, evidence = (
-                    f"Review {code_path.as_posix()}",
-                    [code_path.as_posix()],
-                    {},
+            for v in VARIANTS:
+                self.logger.info(
+                    "Discovering %s::%s", code_path.as_posix(), v or "default"
                 )
-            findings.append({"claim": claim, "files": files, "evidence": evidence})
+                data = self.agent(
+                    f"codex:discover:{code_path.as_posix()}::{v}"
+                )
+                self.logger.info(
+                    "Discovered %s::%s", code_path.as_posix(), v or "default"
+                )
+                if isinstance(data, str):
+                    claim, files, evidence = data.strip(), [code_path.as_posix()], {}
+                elif isinstance(data, dict):
+                    claim = data.get("claim") or f"Review {code_path.as_posix()}"
+                    files = data.get("files") or [code_path.as_posix()]
+                    evidence = data.get("evidence", {})
+                else:
+                    claim, files, evidence = (
+                        f"Review {code_path.as_posix()}",
+                        [code_path.as_posix()],
+                        {},
+                    )
+                key = (
+                    (claim or "").strip().lower(),
+                    (files or [code_path.as_posix()])[0],
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+                findings.append({"claim": claim, "files": files, "evidence": evidence})
         return findings
 
     # -- Orchestration per finding -------------------------------------------
@@ -320,8 +341,6 @@ class Orchestrator:
             if key in seen:
                 continue
             seen.add(key)
-            if len(tasks) >= 3:
-                break
             path = code_path.as_posix()
             goal = f"codex:exec:{path}::{task_text}"
             tasks.append(
@@ -330,6 +349,33 @@ class Orchestrator:
                     "why": t.get("why", ""),
                     "mode": mode,
                     "original": task_text,
+                }
+            )
+
+        prev_verb = getattr(condition, "last_verb", "") if last_sum.startswith("error:") else ""
+        if prev_verb:
+            tasks = [t for t in tasks if _verb(t.get("original", "")) != prev_verb]
+
+        filtered: List[dict] = []
+        verbs = set()
+        for t in tasks:
+            v = _verb(t.get("original", ""))
+            if v in verbs:
+                continue
+            verbs.add(v)
+            filtered.append(t)
+        tasks = filtered[:3]
+
+        if not any(_verb(t.get("original", "")) in {"callgraph", "dataflow"} for t in tasks):
+            path = code_path.as_posix()
+            tasks.append(
+                {
+                    "task": "codex:exec:{}::callgraph from any discovered sink symbol to any public entrypoint; return shortest path with file:line ranges.".format(
+                        path
+                    ),
+                    "why": "force cross-file reachability",
+                    "mode": "exec",
+                    "original": "callgraph shortest-path",
                 }
             )
         if self.reporter:
@@ -536,7 +582,8 @@ class Orchestrator:
         with open(finding_file) as fh:
             finding = json.load(fh)
         task_results: List[dict] = []
-        for t in tasks:
+
+        def _run(t: dict):
             goal = t["task"]
             mode = t.get("mode", "exec")
             original = t.get("original", goal)
@@ -544,28 +591,46 @@ class Orchestrator:
             goal_hash = hashlib.sha1(goal.encode()).hexdigest()
             try:
                 out = self.agent(goal)
+                return (t, out, stamp, goal_hash, None)
+            except Exception as exc:
+                return (t, None, stamp, goal_hash, str(exc))
+
+        with ThreadPoolExecutor(
+            max_workers=int(os.getenv("ANCHOR_WORKERS", "4"))
+        ) as ex:
+            results = [ex.submit(_run, t) for t in tasks]
+            pairs = [f.result() for f in results]
+
+        for t, out, stamp, goal_hash, err in sorted(
+            pairs, key=lambda x: x[3]
+        ):
+            if err is None:
                 condition.evidence.append(json.dumps(out))
                 task_results.append(
                     {
-                        "task": goal,
-                        "mode": mode,
-                        "original": original,
+                        "task": t["task"],
+                        "mode": t.get("mode", "exec"),
+                        "original": t.get("original", t["task"]),
                         "output": out,
                         "timestamp": stamp,
                         "input_sha1": goal_hash,
                     }
                 )
-            except Exception as exc:
+            else:
                 task_results.append(
                     {
-                        "task": goal,
-                        "mode": mode,
-                        "original": original,
-                        "error": str(exc),
+                        "task": t["task"],
+                        "mode": t.get("mode", "exec"),
+                        "original": t.get("original", t["task"]),
+                        "error": err,
                         "timestamp": stamp,
                         "input_sha1": goal_hash,
                     }
                 )
+
+        if pairs:
+            condition.last_verb = _verb(pairs[-1][0].get("original", ""))
+
         finding.setdefault("tasks_log", []).append(
             {"condition": condition.description, "executed": task_results}
         )

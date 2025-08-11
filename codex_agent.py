@@ -22,10 +22,11 @@ class CodexAgent:
     # ---------------- Parsing & Validation -----------------
     def _parse_task(self, task: str):
         if task.startswith("codex:discover:"):
+            rest = task.split("codex:discover:", 1)[1]
+            path, _, variant = rest.partition("::")
             kind = "discover"
-            path = task.split("codex:discover:", 1)[1].strip()
-            path = self._repo_rel(path)
-            return (kind, path)
+            path = self._repo_rel(path.strip())
+            return (kind, path, (variant or "").strip())
         if task.startswith("codex:exec:"):
             rest = task.split("codex:exec:", 1)[1]
             if "::" not in rest:
@@ -43,14 +44,22 @@ class CodexAgent:
         return str(abspath.relative_to(root))
 
     # ---------------- Prompt -----------------
-    def _build_prompt(self, kind: str, path: str, payload: str | None = None) -> str:
+    def _build_prompt(self, kind: str, path: str, payload: str | None = None, variant: str = "") -> str:
         if kind == "discover":
+            lenses = {
+                "deser": "Lens:\n- Focus on unsafe deserialization paths.\n\n",
+                "authz": "Lens:\n- Focus on authorization or privilege checks.\n\n",
+                "path": "Lens:\n- Focus on path traversal or archive extraction.\n\n",
+                "exec": "Lens:\n- Focus on dynamic execution or shelling out.\n\n",
+            }
+            lens_text = lenses.get(variant, "")
             return (
                 "SYSTEM:\n"
                 f"{BANNER}\nSTAGE: discover\n\n"
                 "USER:\n"
                 f"Action: DISCOVER\nPath: {path}\n\n"
                 "Purpose:\n- Ground the claim in specific repo text.\n- Cite ≤3 concrete regions.\n- Formulate a concrete, falsifiable security bug claim.\n- Return 1–3 evidence.highlights (required).\n\n"
+                f"{lens_text}"
                 "Claim requirements:\n- One sentence, falsifiable.\n- Include a brief attacker/trust-boundary clause (≤ 12 words).\n- No speculation.\n\n"
                 "Output JSON:\n{\"schema_version\":1,\n \"stage\":\"discover\",\n \"claim\":\"<security bug claim>\",\n \"files\": [\"<repo-rel path>\", ...],\n \"evidence\":{\"highlights\": [\n    {\"path\":\"<repo-rel>\",\"region\":{\"start_line\":<int>,\"end_line\":<int>},\"why\":\"<security-relevant reason>\"}\n ]}}\n"
             )
@@ -123,8 +132,8 @@ class CodexAgent:
         parsed = self._parse_task(task)
         kind = parsed[0]
         if kind == "discover":
-            path = parsed[1]
-            prompt = self._build_prompt("discover", path)
+            _, path, variant = parsed
+            prompt = self._build_prompt("discover", path, variant=variant)
         else:  # exec
             _, path, payload = parsed
             prompt = self._build_prompt("exec", path, payload)
