@@ -74,21 +74,11 @@ class CodexAgent:
             )
         if kind == "exec":
             return (
-                "SYSTEM:\nStrict JSON only. Deterministic. No network. No writes. Operate in the repo working directory.\n\n"
+                "SYSTEM:\nStrictly deterministic. No network. No writes.\n\n"
                 "USER:\n"
-                f"Action: EXEC\nPath: {path}\nTask: {payload}\n\n"
-                "Do the task using repo-local tools (shell, Python, static reading). Be concise. If you inspect code, include concrete file paths and line spans.\n\n"
-                "Output JSON:\n"
-                "{\"type\":\"exec\",\n"
-                " \"task\":\"<verbatim task>\",\n"
-                " \"result\":{\n"
-                "   \"type\":\"observe\",\n"
-                "   \"notes\":\"<short summary>\",\n"
-                "   \"observations\":[\n"
-                "     {\"path\":\"<repo-rel>\",\"region\":{\"start_line\":<int>,\"end_line\":<int>},\"detail\":\"<what you found>\"}\n"
-                "   ]\n"
-                " }\n"
-                "}\n"
+                f"Do this goal in the repo at {path}:\n"
+                f"{payload}\n\n"
+                "Answer concisely. If you cite code, include `path: start_line–end_line`."
             )
         action = {
             "read": "READ",
@@ -121,22 +111,14 @@ class CodexAgent:
         )
 
     # ---------------- Post-processing -----------------
-    def _postprocess(self, kind: str, path: str, res) -> dict:
+    def _postprocess(self, kind: str, path: str, res):
         try:
             data = json.loads(res.stdout)
+            if isinstance(data, dict) and "type" in data:
+                return data
+            return {"result": data}
         except Exception:
-            return {"error": "invalid-json", "stdout_head": res.stdout[:512]}
-        if data.get("type") == "read" and isinstance(data.get("bytes"), str):
-            b = data["bytes"]
-            if len(b) > MAX_BYTES:
-                data["bytes"] = b[:MAX_BYTES]
-        if data.get("type") == "exec":
-            inner = data.get("result", {})
-            if isinstance(inner, dict) and inner.get("type") == "read" and isinstance(inner.get("bytes"), str):
-                b = inner["bytes"]
-                if len(b) > MAX_BYTES:
-                    inner["bytes"] = b[:MAX_BYTES]
-        return data
+            return res.stdout
 
     # ---------------- Public API -----------------
     def run(self, task: str) -> dict:

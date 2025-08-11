@@ -96,13 +96,19 @@ class Orchestrator:
             self.logger.info("Discovering %s", code_path.as_posix())
             data = self.agent(f"codex:discover:{code_path.as_posix()}")
             self.logger.info("Discovered %s", code_path.as_posix())
-            findings.append(
-                {
-                    "claim": data.get("claim", f"Review {code_path.as_posix()}"),
-                    "files": data.get("files", [code_path.as_posix()]),
-                    "evidence": data.get("evidence", {}),
-                }
-            )
+            if isinstance(data, str):
+                claim, files, evidence = data.strip(), [code_path.as_posix()], {}
+            elif isinstance(data, dict):
+                claim = data.get("claim") or f"Review {code_path.as_posix()}"
+                files = data.get("files") or [code_path.as_posix()]
+                evidence = data.get("evidence", {})
+            else:
+                claim, files, evidence = (
+                    f"Review {code_path.as_posix()}",
+                    [code_path.as_posix()],
+                    {},
+                )
+            findings.append({"claim": claim, "files": files, "evidence": evidence})
         return findings
 
     # -- Orchestration per finding -------------------------------------------
@@ -299,51 +305,21 @@ class Orchestrator:
         if not condition.evidence:
             return "unknown"
         latest = condition.evidence[-1]
-        try:
-            data = json.loads(latest)
-        except Exception:
-            data = {}
-        typ = data.get("type")
-        if typ == "exec":
-            typ = data.get("result", {}).get("type")
-        shortcut = False
-        if typ == "stat":
-            condition.rationale = "stat task succeeded"
-            condition.evidence_refs = [len(condition.evidence) - 1]
-            shortcut = True
-            state = "satisfied"
-            if self.reporter:
-                self.reporter.log(
-                    "judge", state=state, rationale=condition.rationale, shortcut=True
-                )
-            return state
-        if typ == "py:functions":
-            condition.rationale = "python parse succeeded"
-            condition.evidence_refs = [len(condition.evidence) - 1]
-            shortcut = True
-            state = "satisfied"
-            if self.reporter:
-                self.reporter.log(
-                    "judge", state=state, rationale=condition.rationale, shortcut=True
-                )
-            return state
         messages = [
             {
                 "role": "system",
                 "content": (
-                    "You are a security-auditing assistant. Your sole objective is to "
-                    "ADJUDICATE a specific bug claim as TRUE POSITIVE or FALSE POSITIVE "
-                    "with defensible, testable evidence. Maintain determinism (temperature=0). "
-                    "Output STRICT JSON only—no markdown/prose. Use only repository-local "
-                    "information and permitted executions. No network. No file writes."
+                    "You are a deterministic security adjudicator. Strict JSON only."
                 ),
             },
             {
                 "role": "user",
                 "content": (
-                    "Goal: Decide the condition based on the latest evidence only.\n\n"
-                    f"Inputs:\n- condition_desc: \"{condition.description}\"\n- evidence: {condition.evidence}\n\n"
-                    "Decision rubric:\n- satisfied: accept signals observed (or equivalent).\n- failed: reject signals observed (or equivalent).\n- unknown: neither; be precise why.\n\nOutput JSON:\n{\"state\":\"satisfied|failed|unknown\",\n \"rationale\":\"<1–2 sentence evidence-grounded reason>\",\n \"evidence_refs\":[<indices or ids referencing the decisive evidence>]}")
+                    "Decide this condition from the latest evidence only.\n"
+                    f"- condition: \"{condition.description}\"\n"
+                    f"- evidence:\n{latest}\n\n"
+                    "Output JSON: {\"state\":\"satisfied|failed|unknown\",\"rationale\":\"<short>\",\"evidence_refs\":[-1]}"
+                ),
             },
         ]
         functions = [
@@ -353,15 +329,9 @@ class Orchestrator:
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "state": {
-                            "type": "string",
-                            "enum": ["satisfied", "failed", "unknown"],
-                        },
+                        "state": {"type": "string", "enum": ["satisfied", "failed", "unknown"]},
                         "rationale": {"type": "string"},
-                        "evidence_refs": {
-                            "type": "array",
-                            "items": {"type": "integer"},
-                        },
+                        "evidence_refs": {"type": "array", "items": {"type": "integer"}},
                     },
                     "required": ["state", "rationale", "evidence_refs"],
                 },
@@ -382,16 +352,13 @@ class Orchestrator:
         condition.evidence_refs = data.get("evidence_refs", [])
         state = data.get("state", "unknown")
         if self.reporter:
-            payload = {"state": state, "rationale": condition.rationale}
-            if shortcut:
-                payload["shortcut"] = True
-            self.reporter.log("judge", **payload)
+            self.reporter.log("judge", state=state, rationale=condition.rationale)
         return state
-
     # -- Sub-condition narrowing -------------------------------------------
     def _narrow_subconditions(self, condition: Condition) -> List[Condition]:
         """Deterministically derive sub-conditions for an uncertain condition."""
         last_ev = condition.evidence[-1] if condition.evidence else ""
+        blocking = condition.rationale or "condition unresolved"
         messages = [
             {
                 "role": "system",
@@ -407,7 +374,7 @@ class Orchestrator:
                 "role": "user",
                 "content": (
                     "Goal: Replace uncertainty with decisive subconditions that will lead to a verdict.\n\n"
-                    f"Inputs:\n- parent_condition: \"{condition.description}\"\n- blocking_uncertainty: \"condition unresolved\"\n- last_evidence: {last_ev}\n\n"
+                    f"Inputs:\n- parent_condition: \"{condition.description}\"\n- blocking_uncertainty: \"{blocking}\"\n- last_evidence: {last_ev}\n\n"
                     "Constraints:\n- 1–3 subconditions, each mapping to at least one executable task.\n- Make them mutually informative (no overlap).\n\nOutput JSON:\n{\"conditions\":[{\n  \"desc\":\"<testable discriminator>\",\n  \"why\":\"<how it resolves the uncertainty>\",\n  \"accept\":\"<...>\",\n  \"reject\":\"<...>\",\n  \"suggested_tasks\":[\"<exec-able task>\", \"...\"]\n}]}"
                 ),
             },
@@ -502,7 +469,10 @@ class Orchestrator:
                         "input_sha1": goal_hash,
                     }
                 )
-                condition.evidence.append(json.dumps(out)[:10000])
+                if isinstance(out, str):
+                    condition.evidence.append(out[:10000])
+                else:
+                    condition.evidence.append(json.dumps(out)[:10000])
             except Exception as exc:
                 task_results.append(
                     {
@@ -518,16 +488,7 @@ class Orchestrator:
         )
         atomic_write(finding_file, json.dumps(finding, indent=2).encode())
         if self.reporter:
-            types = []
-            for r in task_results:
-                out = r.get("output")
-                if isinstance(out, dict):
-                    typ = out.get("type")
-                    if typ == "exec":
-                        typ = f"exec→{out.get('result', {}).get('type', '')}"
-                    types.append(typ)
-                else:
-                    types.append("error")
+            types = [("error" if "error" in r else "ok") for r in task_results]
             self.reporter.log("tasks:result", types=types)
         return task_results
 
