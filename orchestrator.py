@@ -32,14 +32,26 @@ class Condition:
     """A checkable assertion about a finding."""
 
     description: str
+    why: str = ""
+    accept: str = ""
+    reject: str = ""
+    suggested_tasks: List[str] = field(default_factory=list)
     state: str = "unknown"  # can be "satisfied" or "failed" in the future
+    rationale: str = ""
+    evidence_refs: List[int] = field(default_factory=list)
     evidence: List[str] = field(default_factory=list)
     subconditions: List["Condition"] = field(default_factory=list)
 
     def to_dict(self) -> Dict:
         return {
             "description": self.description,
+            "why": self.why,
+            "accept": self.accept,
+            "reject": self.reject,
+            "suggested_tasks": self.suggested_tasks,
             "state": self.state,
+            "rationale": self.rationale,
+            "evidence_refs": self.evidence_refs,
             "evidence": self.evidence,
             "subconditions": [c.to_dict() for c in self.subconditions],
         }
@@ -94,52 +106,88 @@ class Orchestrator:
 
     # -- Orchestration per finding -------------------------------------------
     def derive_conditions(self, finding: Dict) -> List[Condition]:
-        """Use the LLM to deterministically derive conditions.
-
-        The model is expected to call the ``emit_conditions`` function with a
-        JSON payload of ``{"conditions": ["..."]}``.
-        """
+        """Use the LLM to deterministically derive conditions."""
+        claim = finding.get("claim", "")
         messages = [
             {
                 "role": "system",
                 "content": (
-                    "Given a bug finding, extract minimal checkable conditions "
-                    "and respond via function call."
+                    "You are a security-auditing assistant. Your sole objective is to "
+                    "ADJUDICATE a specific bug claim as TRUE POSITIVE or FALSE POSITIVE "
+                    "with defensible, testable evidence. Maintain determinism "
+                    "(temperature=0). Output STRICT JSON only—no markdown/prose. Use only "
+                    "repository-local information and permitted executions. No network. "
+                    "No file writes.\n\nDefinitions:\n- TRUE POSITIVE: Evidence demonstrates the claim holds under realistic "
+                    "conditions within the codebase.\n- FALSE POSITIVE: Evidence demonstrates the claim does not hold, is unreachable, "
+                    "or is otherwise invalid.\n- UNKNOWN: Evidence gathered so far is insufficient; propose targeted sub-checks.\n\n"
+                    "Evidence must be concrete, minimally sufficient, and reproducible."
                 ),
             },
             {
                 "role": "user",
-                "content": f"Finding claim: {finding.get('claim', '')}",
+                "content": (
+                    f"Goal: Break down the bug claim into minimal, testable security CONDITIONS that, if individually decided, collectively allow a final verdict (TRUE POSITIVE / FALSE POSITIVE).\n\n"
+                    f"Inputs:\n- claim: \"{claim}\"\n\n"
+                    "Constraints:\n- 1–5 conditions.\n- Each condition must be objectively checkable via codex-executable tasks.\n- Each condition must state an acceptance criterion tied to the final verdict.\n\n"
+                    "Output JSON:\n{\"conditions\":[\n  {\n    \\\"desc\\\":\\\"<short, testable statement>\\\",\\n    \\\"why\\\":\\\"<why this condition matters to verifying/refuting the claim>\\\",\\n    \\\"accept\\\":\\\"<what observation(s) would satisfy>\\\",\\n    \\\"reject\\\":\\\"<what observation(s) would fail>\\\",\\n    \\\"suggested_tasks\\\":[\\\"<exec-able task string>\\\", \\\"...\\\"]\\n  }\\n]]}\\n"
+                ),
             },
         ]
         functions = [
             {
                 "name": "emit_conditions",
-                "description": "Return a list of condition descriptions.",
+                "description": "Return condition objects.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "conditions": {
                             "type": "array",
-                            "items": {"type": "string"},
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "desc": {"type": "string"},
+                                    "why": {"type": "string"},
+                                    "accept": {"type": "string"},
+                                    "reject": {"type": "string"},
+                                    "suggested_tasks": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                    },
+                                },
+                                "required": [
+                                    "desc",
+                                    "why",
+                                    "accept",
+                                    "reject",
+                                    "suggested_tasks",
+                                ],
+                            },
                         }
                     },
                     "required": ["conditions"],
                 },
             }
         ]
-        self.logger.info(
-            "LLM derive_conditions for claim: %s",
-            finding.get("claim", ""),
-        )
+        self.logger.info("LLM derive_conditions for claim: %s", claim)
         response = self._with_retries(
             openai_generate_response,
             messages=messages,
             functions=functions,
             function_call={"name": "emit_conditions"},
+            temperature=0,
         )
         _, data = openai_parse_function_call(response)
-        conds = [Condition(description=d) for d in data.get("conditions", [])]
+        conds = []
+        for d in data.get("conditions", []) or []:
+            conds.append(
+                Condition(
+                    description=d.get("desc", ""),
+                    why=d.get("why", ""),
+                    accept=d.get("accept", ""),
+                    reject=d.get("reject", ""),
+                    suggested_tasks=d.get("suggested_tasks", []),
+                )
+            )
         return conds
 
     def _normalize_task(self, text: str, code_path: Path) -> str | None:
@@ -159,19 +207,51 @@ class Orchestrator:
     def generate_tasks(self, condition: Condition, code_path: Path) -> List[dict]:
         """Generate tasks to gather evidence for ``condition``."""
         messages = [
-            {"role": "system", "content": "You generate step-by-step tasks."},
-            {"role": "user", "content": f"Condition: {condition.description}"},
+            {
+                "role": "system",
+                "content": (
+                    "You are a security-auditing assistant. Your sole objective is to "
+                    "ADJUDICATE a specific bug claim as TRUE POSITIVE or FALSE POSITIVE "
+                    "with defensible, testable evidence. Maintain determinism (temperature=0). "
+                    "Output STRICT JSON only—no markdown/prose. Use only repository-local "
+                    "information and permitted executions. No network. No file writes."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    "Goal: Produce an ordered, minimal task plan to decide this condition.\n\n"
+                    f"Inputs:\n- condition: {{\"desc\":\"{condition.description}\",\"accept\":\"{condition.accept}\",\"reject\":\"{condition.reject}\"}}\n\n"
+                    "Constraints:\n- 1–6 tasks, strictly necessary and sufficient.\n- Each task must be directly runnable via Codex EXEC.\n- No placeholders; specify exact target(s) and method(s).\n- Prefer static checks; use lightweight dynamic checks only if essential.\n\n"
+                    "Output JSON:\n{\"tasks\":[{\n  \"task\":\"<verbatim codex-executable string>\",\n  \"why\":\"<what this task will prove or rule out>\",\n  \"expected_signals\":{\"accept\":\"<signal(s)>\",\"reject\":\"<signal(s)>\"}\n  }]}"
+                ),
+            },
         ]
         functions = [
             {
                 "name": "emit_tasks",
-                "description": "Return a list of tasks to gather evidence.",
+                "description": "Return task objects.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "tasks": {
                             "type": "array",
-                            "items": {"type": "string"},
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "task": {"type": "string"},
+                                    "why": {"type": "string"},
+                                    "expected_signals": {
+                                        "type": "object",
+                                        "properties": {
+                                            "accept": {"type": "string"},
+                                            "reject": {"type": "string"},
+                                        },
+                                        "required": ["accept", "reject"],
+                                    },
+                                },
+                                "required": ["task", "why", "expected_signals"],
+                            },
                         }
                     },
                     "required": ["tasks"],
@@ -189,7 +269,16 @@ class Orchestrator:
             temperature=0,
         )
         _, data = openai_parse_function_call(response)
-        tasks = [{"task": t, "original": t} for t in data.get("tasks", []) or []]
+        tasks = []
+        for t in data.get("tasks", []) or []:
+            tasks.append(
+                {
+                    "task": t.get("task", ""),
+                    "why": t.get("why", ""),
+                    "expected_signals": t.get("expected_signals", {}),
+                    "original": t.get("task", ""),
+                }
+            )
         return tasks
 
     def judge_condition(self, condition: Condition) -> str:
@@ -205,19 +294,30 @@ class Orchestrator:
         if typ == "exec":
             typ = data.get("result", {}).get("type")
         if typ == "stat":
+            condition.rationale = "stat task succeeded"
+            condition.evidence_refs = [len(condition.evidence) - 1]
             return "satisfied"
         if typ == "py:functions":
+            condition.rationale = "python parse succeeded"
+            condition.evidence_refs = [len(condition.evidence) - 1]
             return "satisfied"
         messages = [
             {
                 "role": "system",
-                "content": "Decide if a condition is satisfied based on evidence.",
+                "content": (
+                    "You are a security-auditing assistant. Your sole objective is to "
+                    "ADJUDICATE a specific bug claim as TRUE POSITIVE or FALSE POSITIVE "
+                    "with defensible, testable evidence. Maintain determinism (temperature=0). "
+                    "Output STRICT JSON only—no markdown/prose. Use only repository-local "
+                    "information and permitted executions. No network. No file writes."
+                ),
             },
             {
                 "role": "user",
                 "content": (
-                    f"Condition: {condition.description}\nEvidence: {condition.evidence}"
-                ),
+                    "Goal: Decide the condition based on the latest evidence only.\n\n"
+                    f"Inputs:\n- condition_desc: \"{condition.description}\"\n- evidence: {condition.evidence}\n\n"
+                    "Decision rubric:\n- satisfied: accept signals observed (or equivalent).\n- failed: reject signals observed (or equivalent).\n- unknown: neither; be precise why.\n\nOutput JSON:\n{\"state\":\"satisfied|failed|unknown\",\n \"rationale\":\"<1–2 sentence evidence-grounded reason>\",\n \"evidence_refs\":[<indices or ids referencing the decisive evidence>]}")
             },
         ]
         functions = [
@@ -230,9 +330,14 @@ class Orchestrator:
                         "state": {
                             "type": "string",
                             "enum": ["satisfied", "failed", "unknown"],
-                        }
+                        },
+                        "rationale": {"type": "string"},
+                        "evidence_refs": {
+                            "type": "array",
+                            "items": {"type": "integer"},
+                        },
                     },
-                    "required": ["state"],
+                    "required": ["state", "rationale", "evidence_refs"],
                 },
             }
         ]
@@ -247,37 +352,63 @@ class Orchestrator:
             temperature=0,
         )
         _, data = openai_parse_function_call(response)
+        condition.rationale = data.get("rationale", "")
+        condition.evidence_refs = data.get("evidence_refs", [])
         return data.get("state", "unknown")
 
     # -- Sub-condition narrowing -------------------------------------------
     def _narrow_subconditions(self, condition: Condition) -> List[Condition]:
         """Deterministically derive sub-conditions for an uncertain condition."""
+        last_ev = condition.evidence[-1] if condition.evidence else ""
         messages = [
             {
                 "role": "system",
                 "content": (
-                    "Propose minimal, checkable sub-conditions that would "
-                    "resolve uncertainty."
+                    "You are a security-auditing assistant. Your sole objective is to "
+                    "ADJUDICATE a specific bug claim as TRUE POSITIVE or FALSE POSITIVE "
+                    "with defensible, testable evidence. Maintain determinism (temperature=0). "
+                    "Output STRICT JSON only—no markdown/prose. Use only repository-local "
+                    "information and permitted executions. No network. No file writes."
                 ),
             },
             {
                 "role": "user",
                 "content": (
-                    f"Parent condition: {condition.description}\n"
-                    f"Current evidence: {condition.evidence[-1:]}"
+                    "Goal: Replace uncertainty with decisive subconditions that will lead to a verdict.\n\n"
+                    f"Inputs:\n- parent_condition: \"{condition.description}\"\n- blocking_uncertainty: \"condition unresolved\"\n- last_evidence: {last_ev}\n\n"
+                    "Constraints:\n- 1–3 subconditions, each mapping to at least one executable task.\n- Make them mutually informative (no overlap).\n\nOutput JSON:\n{\"conditions\":[{\n  \"desc\":\"<testable discriminator>\",\n  \"why\":\"<how it resolves the uncertainty>\",\n  \"accept\":\"<...>\",\n  \"reject\":\"<...>\",\n  \"suggested_tasks\":[\"<exec-able task>\", \"...\"]\n}]}"
                 ),
             },
         ]
         functions = [
             {
                 "name": "emit_conditions",
-                "description": "Return a list of subcondition descriptions.",
+                "description": "Return subcondition objects.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "conditions": {
                             "type": "array",
-                            "items": {"type": "string"},
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "desc": {"type": "string"},
+                                    "why": {"type": "string"},
+                                    "accept": {"type": "string"},
+                                    "reject": {"type": "string"},
+                                    "suggested_tasks": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                    },
+                                },
+                                "required": [
+                                    "desc",
+                                    "why",
+                                    "accept",
+                                    "reject",
+                                    "suggested_tasks",
+                                ],
+                            },
                         }
                     },
                     "required": ["conditions"],
@@ -285,8 +416,7 @@ class Orchestrator:
             }
         ]
         self.logger.info(
-            "LLM narrow_subconditions for condition: %s",
-            condition.description,
+            "LLM narrow_subconditions for condition: %s", condition.description
         )
         response = self._with_retries(
             openai_generate_response,
@@ -296,7 +426,17 @@ class Orchestrator:
             temperature=0,
         )
         _, data = openai_parse_function_call(response)
-        subs = [Condition(description=d) for d in data.get("conditions", [])]
+        subs: List[Condition] = []
+        for d in data.get("conditions", []) or []:
+            subs.append(
+                Condition(
+                    description=d.get("desc", ""),
+                    why=d.get("why", ""),
+                    accept=d.get("accept", ""),
+                    reject=d.get("reject", ""),
+                    suggested_tasks=d.get("suggested_tasks", []),
+                )
+            )
         condition.subconditions.extend(subs)
         return subs
 
