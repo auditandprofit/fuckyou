@@ -28,6 +28,9 @@ def clean_env(tmp_path, monkeypatch):
     codex.write_text(
         "#! /usr/bin/env python3\n"
         "import sys, json, re, os\n"
+        "out_path = sys.argv[sys.argv.index('--output-last-message') + 1]\n"
+        "work = sys.argv[sys.argv.index('-C') + 1]\n"
+        "os.chdir(work)\n"
         "sys.path.insert(0, os.getcwd())\n"
         "prompt = sys.stdin.read()\n"
         "m = re.search(r'Path: (.*)', prompt)\n"
@@ -41,7 +44,8 @@ def clean_env(tmp_path, monkeypatch):
         "    out = {\"type\":\"exec\",\"task\":payload,\"result\":run_agent(payload)}\n"
         "else:\n"
         "    out = {\"error\":\"unknown\"}\n"
-        "sys.stdout.write(json.dumps(out))\n"
+        "open(out_path, 'w').write(json.dumps(out))\n"
+        "print('ok')\n"
     )
     codex.chmod(0o755)
     monkeypatch.setenv("PATH", f"{codex_dir}:{os.environ['PATH']}")

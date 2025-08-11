@@ -10,6 +10,10 @@ def test_exec_handles_keyboard_interrupt(tmp_path):
     codex.write_text(
         """#!/usr/bin/env python3
 import os, signal, sys, time
+out_path = sys.argv[sys.argv.index('--output-last-message') + 1]
+work = sys.argv[sys.argv.index('-C') + 1]
+os.chdir(work)
+open(out_path, 'w').write('')
 open('pid', 'w').write(str(os.getpid()))
 signal.signal(signal.SIGINT, lambda s, f: sys.exit(130))
 time.sleep(60)
