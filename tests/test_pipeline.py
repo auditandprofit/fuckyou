@@ -288,6 +288,32 @@ def test_disallows_in_repo_findings_dir(monkeypatch):
     assert res.returncode != 0
 
 
+def test_missing_codex_exits_cleanly(monkeypatch):
+    manifest = Path("manifest.txt")
+    manifest.write_text("examples/example1.py")
+
+    import run_pipeline as rp
+    from codex_dispatch import CodexNotFound
+
+    class Boom:
+        def __init__(self, *a, **k):
+            raise CodexNotFound("missing")
+
+    monkeypatch.setattr(rp, "CodexClient", Boom)
+
+    res = run_pipeline(
+        monkeypatch,
+        args=["--findings-dir", "findings", "--allow-in-repo-artifacts"],
+        include_defaults=False,
+    )
+    assert res.returncode != 0
+    run_dir = get_run_dirs()[0]
+    run_data = read_run_json(run_dir)
+    assert run_data["counts"]["errors"] == 1
+    log = (run_dir / "orchestrator.log").read_text()
+    assert "codex binary not found" in log
+
+
 def test_atomic_write_no_partial_on_error(tmp_path, monkeypatch):
     target = tmp_path / "out.txt"
 
