@@ -41,6 +41,11 @@ def parse_args(argv: list[str] | None = None):
     ap.add_argument("--service-tier", default=openai.DEFAULT_SERVICE_TIER)
     ap.add_argument("--live", action="store_true")
     ap.add_argument("--live-format", choices=["text", "json"], default="text")
+    ap.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Echo orchestrator logs to stderr",
+    )
     return ap.parse_args(argv)
 
 
@@ -71,6 +76,17 @@ def main(argv: list[str] | None = None) -> None:
         run_ts = utc_timestamp()
         run_id = f"{run_ts}_{git_short}"
         run_path = findings_root / f"run_{run_id}"
+
+    # allow env override for CI/local without touching flags
+    if not args.verbose:
+        args.verbose = os.getenv("ANCHOR_VERBOSE") not in {
+            None,
+            "",
+            "0",
+            "false",
+            "False",
+        }
+
     run_path.mkdir(parents=True, exist_ok=False)
 
     logger = logging.getLogger("orchestrator")
@@ -78,10 +94,21 @@ def main(argv: list[str] | None = None) -> None:
     formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
     fh = logging.FileHandler(run_path / "orchestrator.log")
     fh.setFormatter(formatter)
-    sh = logging.StreamHandler()
-    sh.setFormatter(formatter)
     logger.addHandler(fh)
-    logger.addHandler(sh)
+
+    sh: logging.Handler | None = None
+
+    # Only echo to terminal when verbose, or when not in live mode.
+    # In live mode, the Reporter owns the terminal UX.
+    if args.verbose or not args.live:
+        sh = logging.StreamHandler()
+        sh.setFormatter(formatter)
+        # If not verbose, keep console noise low in non-live runs.
+        sh.setLevel(logging.INFO if args.verbose else logging.WARNING)
+        logger.addHandler(sh)
+
+    # Avoid duplicate propagation to root handlers if any
+    logger.propagate = False
 
     logger.info("Run %s commit %s", run_id, git_short)
     logger.info("Parsed args: %s", args)
@@ -94,7 +121,8 @@ def main(argv: list[str] | None = None) -> None:
         logger.error("Manifest error: %s", exc)
         fh.close()
         logger.removeHandler(fh)
-        logger.removeHandler(sh)
+        if sh is not None:
+            logger.removeHandler(sh)
         shutil.rmtree(run_path, ignore_errors=True)
         raise SystemExit(1)
     logger.info("Manifest validated: %d files", len(manifest_files))
