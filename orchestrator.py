@@ -229,11 +229,11 @@ class Orchestrator:
                     "Goal: Produce an ordered, minimal plan of NATURAL-LANGUAGE tasks that will decide this condition.\n\n"
                     f"Inputs:\n- condition: {{\"desc\":\"{condition.description}\",\"accept\":\"{condition.accept}\",\"reject\":\"{condition.reject}\"}}\n- suggested_tasks: {json.dumps(condition.suggested_tasks)}\n\n"
                     "Constraints:\n"
-                    "- 1–3 tasks, each is exec.\n"
-                    "- Final task must directly test the condition's accept vs reject.\n"
-                    "- Each task is a single clear action to perform in the repo (no pseudo-DSL).\n"
-                    "- No read/stat/py modes.\n"
-                    "- Examples: \"Trace control flow backward from <location> to confirm a permission check exists\", \"List call sites of <fn> and inspect argument validation\", \"Search for uses of <symbol> that bypass <guard>\".\n"
+                    "- Emit 1–3 tasks, each is *exec*.\n"
+                    "- Final task must directly test the condition's ACCEPT vs REJECT.\n"
+                    "- Each task is a single clear action to perform in the repository (no pseudo-DSL).\n"
+                    "- Use plain English; do not mention internal mode names.\n"
+                    "- You may traverse the entire repo; include explicit paths when known.\n"
                     "- No external network/tools.\n"
                 ),
             },
@@ -330,13 +330,15 @@ class Orchestrator:
             {
                 "role": "system",
                 "content": (
-                    f"{BANNER}\nSTAGE: judge\n\nDecide condition state from the latest observation only."
+                    f"{BANNER}\nSTAGE: judge\n\nDecide condition state from the latest observation only, anchored to the acceptance/rejection criteria."
                 ),
             },
             {
                 "role": "user",
                 "content": (
                     f"Condition: \"{condition.description}\"\n"
+                    f"ACCEPT IF: {condition.accept}\n"
+                    f"REJECT IF: {condition.reject}\n"
                     f"Summary: {summary}\n"
                     f"Citations: {json.dumps(citations)}\n"
                 ),
@@ -395,8 +397,14 @@ class Orchestrator:
                 "role": "user",
                 "content": (
                     "Goal: Replace uncertainty with decisive subconditions that will lead to a verdict.\n\n"
-                    f"Inputs:\n- parent_condition: \"{condition.description}\"\n- blocking_uncertainty: \"{blocking}\"\n- last_evidence: {last_ev}\n\n"
-                    "Constraints:\n- 1–3 subconditions, each mapping to at least one executable task.\n- Make them mutually informative (no overlap)."
+                    f"Inputs:\n- parent_condition: \"{condition.description}\"\n"
+                    f"- parent_accept: \"{condition.accept}\"\n"
+                    f"- parent_reject: \"{condition.reject}\"\n"
+                    f"- blocking_uncertainty: \"{blocking}\"\n"
+                    f"- last_evidence: {last_ev}\n\n"
+                    "Constraints:\n- 1–3 subconditions, each mapping to at least one executable task.\n"
+                    "- Each subcondition must target an unmet part of the ACCEPT/REJECT criteria.\n"
+                    "- Make them mutually informative (no overlap)."
                 ),
             },
         ]
